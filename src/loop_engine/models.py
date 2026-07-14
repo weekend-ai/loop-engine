@@ -27,6 +27,7 @@ class CanonicalEvent(BaseModel):
     output_tokens: int | None = None
     cost_usd: float | None = None
     latency_ms: int | None = None
+    message_id: str | None = None
     asset_markers: list[str] = Field(default_factory=list)
     raw_ref: str
 

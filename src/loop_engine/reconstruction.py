@@ -46,6 +46,14 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
         ]
         cost_values = [event.cost_usd for event in ordered if event.cost_usd is not None]
         latency_values = [event.latency_ms for event in ordered if event.latency_ms is not None]
+        input_totals: dict[str, int] = {}
+        output_totals: dict[str, int] = {}
+        for event in ordered:
+            key = event.message_id or event.event_id
+            if event.input_tokens is not None:
+                input_totals[key] = event.input_tokens
+            if event.output_tokens is not None:
+                output_totals[key] = event.output_tokens
         tasks.append(
             TaskRun(
                 task_id=f"task:{session_id}",
@@ -58,8 +66,8 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
                 model_ids=sorted({event.model for event in ordered if event.model}),
                 tool_names=sorted({event.tool_name for event in ordered if event.tool_name}),
                 asset_exposures=exposures,
-                input_tokens=sum(event.input_tokens or 0 for event in ordered),
-                output_tokens=sum(event.output_tokens or 0 for event in ordered),
+                input_tokens=sum(input_totals.values()),
+                output_tokens=sum(output_totals.values()),
                 cost_usd=sum(cost_values) if cost_values else None,
                 latency_ms=sum(latency_values) if latency_values else None,
             )

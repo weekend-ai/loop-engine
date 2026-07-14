@@ -70,10 +70,14 @@ def extract_deterministic_signals(
                         )
                     )
             if event.status == "error":
+                is_tool_failure = bool(event.tool_name) or event.event_type in {
+                    "tool_use",
+                    "tool_result",
+                }
                 all_signals.append(
                     _new_signal(
                         task,
-                        "tool_failure" if event.tool_name else "api_failure",
+                        "tool_failure" if is_tool_failure else "api_failure",
                         event.tool_name or event.event_type,
                         "negative",
                         event,
