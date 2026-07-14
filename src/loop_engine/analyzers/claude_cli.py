@@ -17,8 +17,8 @@ Root causes are hypotheses, never facts. Do not calculate aggregate metrics.
 """
 
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(api[_-]?key|access[_-]?token|token|authorization|password|passwd|secret)"
-    r"(\s*[:=]\s*)([^\s,;]+)"
+    r"(?i)(?<![\w-])([\"']?)(api[_-]?key|access[_-]?token|token|authorization|"
+    r"password|passwd|secret)\1(\s*[:=]\s*)([\"']?)([^\"'\s,;}]+)\4"
 )
 _BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 _PROVIDER_TOKEN = re.compile(r"\b(?:sk-ant-|sk-)[A-Za-z0-9_-]{12,}\b")
@@ -28,7 +28,7 @@ _AWS_ACCESS_KEY = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 def _redact(value: str | None, max_chars: int) -> str | None:
     if value is None:
         return None
-    redacted = _SECRET_ASSIGNMENT.sub(r"\1\2[REDACTED]", value)
+    redacted = _SECRET_ASSIGNMENT.sub(r"\1\2\1\3\4[REDACTED]\4", value)
     redacted = _BEARER_TOKEN.sub("Bearer [REDACTED]", redacted)
     redacted = _PROVIDER_TOKEN.sub("[REDACTED]", redacted)
     redacted = _AWS_ACCESS_KEY.sub("[REDACTED]", redacted)

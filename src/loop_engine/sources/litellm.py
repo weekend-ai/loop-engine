@@ -3,7 +3,7 @@ from __future__ import annotations
 import glob
 import hashlib
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,11 +36,11 @@ def _messages(record: dict[str, Any]) -> list[tuple[str, str | None]]:
 
 def _response(record: dict[str, Any]) -> tuple[str, str | None]:
     response = record.get("response") or {}
-    text = _content(
-        response.get("content")
-        or ((response.get("choices") or [{}])[0].get("message") or {}).get("content")
+    choice_message = ((response.get("choices") or [{}])[0].get("message") or {})
+    raw_content = (
+        response.get("content") if "content" in response else choice_message.get("content")
     )
-    return str(response.get("role") or "assistant"), text
+    return str(response.get("role") or "assistant"), _content(raw_content)
 
 
 def _timestamp(value: Any) -> datetime:
@@ -173,17 +173,34 @@ def events_from_litellm_record(
     response_role, response_text = _response(record)
     raw_status = str(record.get("status") or "success").lower()
     status = "error" if raw_status in {"error", "failure", "failed"} else raw_status
-    if response_text is not None or status == "error":
+    completion_present = status == "error" or any(
+        key in record for key in ("response", "end_time", "usage", "cost", "cost_usd")
+    )
+    if completion_present:
         usage = record.get("usage") or response.get("usage") or {}
         start = timestamp
         end_raw = record.get("end_time") or timestamp
         end = _timestamp(end_raw)
-        response_content = response_text or _content(record.get("error")) or raw_status
+        choice_message = ((response.get("choices") or [{}])[0].get("message") or {})
+        tool_calls = response.get("tool_calls") or choice_message.get("tool_calls")
+        if response_text is not None:
+            response_content = response_text
+        elif status == "error":
+            response_content = _content(record.get("error")) or raw_status
+        else:
+            response_content = _content(tool_calls) or raw_status
+        event_type = (
+            "message"
+            if response_text is not None
+            else "request_error"
+            if status == "error"
+            else "request_complete"
+        )
         yield CanonicalEvent(
             event_id=namespaced_id(source_id, compound_id(request_id, "response")),
             source_id=source_id,
             timestamp=end,
-            event_type="message" if response_text is not None else "request_error",
+            event_type=event_type,
             session_hint=namespaced_session,
             actor_id=actor_id,
             role=response_role,
@@ -240,6 +257,45 @@ class LiteLLMLocalJsonSource:
         return _events_from_records(records, self.source_id)
 
 
+def _read_limited_s3_body(
+    response: Mapping[str, Any],
+    object_uri: str,
+    max_object_bytes: int,
+    remaining_total_bytes: int,
+) -> bytes:
+    body_stream = response["Body"]
+    content_length = response.get("ContentLength")
+    try:
+        if content_length is not None:
+            expected = int(content_length)
+            if expected > max_object_bytes:
+                raise ValueError(f"S3 object size limit exceeded: {object_uri}")
+            if expected > remaining_total_bytes:
+                raise ValueError("S3 total byte limit exceeded")
+
+        hard_limit = min(max_object_bytes, remaining_total_bytes)
+        chunks: list[bytes] = []
+        bytes_read = 0
+        while bytes_read <= hard_limit:
+            chunk = body_stream.read(hard_limit + 1 - bytes_read)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            bytes_read += len(chunk)
+            if bytes_read > max_object_bytes:
+                raise ValueError(f"S3 object size limit exceeded: {object_uri}")
+            if bytes_read > remaining_total_bytes:
+                raise ValueError("S3 total byte limit exceeded")
+
+        if content_length is not None and bytes_read != int(content_length):
+            raise ValueError(f"S3 body length mismatch: {object_uri}")
+        return b"".join(chunks)
+    finally:
+        close = getattr(body_stream, "close", None)
+        if callable(close):
+            close()
+
+
 class LiteLLMS3JsonSource:
     def __init__(
         self,
@@ -282,16 +338,19 @@ class LiteLLMS3JsonSource:
                 if not key.endswith((".json", ".jsonl")):
                     continue
                 listed_size = item.get("Size")
-                if listed_size is not None and int(listed_size) > self.max_object_bytes:
-                    raise ValueError(f"S3 object size limit exceeded: s3://{self.bucket}/{key}")
-                body_stream = self.client.get_object(Bucket=self.bucket, Key=key)["Body"]
                 remaining_total = self.max_total_bytes - total_bytes
-                read_limit = min(self.max_object_bytes, remaining_total) + 1
-                body = body_stream.read(read_limit)
-                if len(body) > self.max_object_bytes:
-                    raise ValueError(f"S3 object size limit exceeded: s3://{self.bucket}/{key}")
-                if len(body) > remaining_total:
+                object_uri = f"s3://{self.bucket}/{key}"
+                if listed_size is not None and int(listed_size) > self.max_object_bytes:
+                    raise ValueError(f"S3 object size limit exceeded: {object_uri}")
+                if listed_size is not None and int(listed_size) > remaining_total:
                     raise ValueError("S3 total byte limit exceeded")
+                response = self.client.get_object(Bucket=self.bucket, Key=key)
+                body = _read_limited_s3_body(
+                    response,
+                    object_uri,
+                    self.max_object_bytes,
+                    remaining_total,
+                )
                 total_bytes += len(body)
                 text = body.decode("utf-8")
                 for index, record in enumerate(_records_from_text(text, key)):

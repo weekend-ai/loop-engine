@@ -79,7 +79,10 @@ def test_claude_cli_analyzer_uses_schema_and_preserves_evidence() -> None:
             event_type="message",
             session_hint="s1",
             role="user",
-            content="Do not change the schema; api_key=super-secret-value",
+            content=(
+                'Do not change the schema; api_key=super-secret-value; '
+                '{"password":"JSONSECRET"}'
+            ),
             raw_ref="fixture:e2",
         ),
     ]
@@ -105,6 +108,7 @@ def test_claude_cli_analyzer_uses_schema_and_preserves_evidence() -> None:
     assert "TOOLSECRET" not in serialized_input
     assert "ASSETSECRET" not in serialized_input
     assert "VERSIONSECRET" not in serialized_input
+    assert "JSONSECRET" not in serialized_input
     assert "[REDACTED]" in serialized_input
     assert "tool_result" not in serialized_input
 

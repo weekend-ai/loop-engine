@@ -208,6 +208,35 @@ def test_litellm_preserves_explicit_zero_cost() -> None:
     assert events[-1].cost_usd == 0.0
 
 
+def test_litellm_success_without_text_preserves_completion_metrics() -> None:
+    record = _record(
+        "tool-only",
+        "2026-07-13T10:00:00Z",
+        [{"role": "user", "content": "Use the tool"}],
+        "ignored",
+    )
+    record["end_time"] = "2026-07-13T10:00:01Z"
+    record["response"] = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "call-1", "function": {"name": "lookup"}}],
+    }
+    record["usage"] = {"prompt_tokens": 0, "completion_tokens": 3}
+    record["cost"] = 0.25
+
+    events = list(events_from_litellm_record(record, "litellm", "fixture://tool-only"))
+    tasks = reconstruct_tasks(events)
+
+    assert len(events) == 2
+    assert events[-1].event_type == "request_complete"
+    assert events[-1].cost_usd == 0.25
+    assert events[-1].input_tokens == 0
+    assert events[-1].output_tokens == 3
+    assert events[-1].latency_ms == 1000
+    assert tasks[0].cost_usd == 0.25
+    assert tasks[0].latency_ms == 1000
+
+
 def test_litellm_missing_request_id_has_stable_fallback() -> None:
     record = _record(
         "temporary",
@@ -384,6 +413,44 @@ def test_s3_body_read_is_bounded_before_size_check() -> None:
         )
 
     assert read_amounts == [6]
+
+
+def test_s3_short_reads_continue_until_eof_or_limit() -> None:
+    closed = False
+    read_amounts: list[int | None] = []
+
+    class ShortReadBody:
+        def __init__(self) -> None:
+            self.chunks = iter([b"{}", b"xx", b""])
+
+        def read(self, amount: int | None = None) -> bytes:
+            read_amounts.append(amount)
+            return next(self.chunks)
+
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
+
+    class ShortReadClient(_FakeS3Client):
+        def get_object(self, Bucket: str, Key: str) -> dict[str, ShortReadBody]:  # noqa: N803
+            assert Bucket == "bucket"
+            assert Key == "logs/request.json"
+            return {"Body": ShortReadBody()}
+
+    with pytest.raises(ValueError, match="object size limit"):
+        list(
+            LiteLLMS3JsonSource(
+                "s3-source",
+                "s3://bucket/logs/",
+                client=ShortReadClient(b""),
+                max_object_bytes=3,
+                max_total_bytes=10,
+            ).iter_events()
+        )
+
+    assert len(read_amounts) == 2
+    assert all(amount is not None for amount in read_amounts)
+    assert closed is True
 
 
 def test_litellm_json_records_must_be_objects(tmp_path: Path) -> None:
