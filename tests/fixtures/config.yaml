@@ -1,0 +1,16 @@
+version: 1
+workspace: ./tests/.loop-engine
+sources:
+  - id: claude-fixture
+    type: claude_code_jsonl
+    path: ./claude/*.jsonl
+  - id: litellm-fixture
+    type: litellm_local_json
+    path: ./litellm/*.json
+analysis:
+  provider: rule_based
+metrics:
+  group_by: [task_type, model, asset_version]
+output:
+  directory: ./tests/output
+  formats: [json, markdown]

@@ -1,0 +1,19 @@
+version: 1
+workspace: ./.loop-engine
+
+sources:
+  - id: claude-fixture
+    type: claude_code_jsonl
+    path: ./logs/claude/*.jsonl
+
+analysis:
+  provider: rule_based
+  model: sonnet
+  max_concurrency: 4
+
+metrics:
+  group_by: [task_type, model, asset_version]
+
+output:
+  directory: ./output
+  formats: [json, markdown]

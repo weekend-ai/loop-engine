@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.loop-engine/
+tests/.loop-engine/
+tests/output/
+output/
+*.duckdb
+.env

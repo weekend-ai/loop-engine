@@ -1,0 +1,4 @@
+{"sessionId":"demo-v1","uuid":"v1-1","parentUuid":null,"timestamp":"2026-07-13T09:00:00Z","type":"user","assetMarkers":["systematic-debugging@v1"],"message":{"role":"user","content":"Fix the failing authentication test"}}
+{"sessionId":"demo-v1","uuid":"v1-2","parentUuid":"v1-1","timestamp":"2026-07-13T09:00:10Z","type":"assistant","assetMarkers":["systematic-debugging@v1"],"message":{"role":"assistant","content":"I will change the database schema."}}
+{"sessionId":"demo-v1","uuid":"v1-3","parentUuid":"v1-2","timestamp":"2026-07-13T09:00:20Z","type":"user","assetMarkers":["systematic-debugging@v1"],"message":{"role":"user","content":"No, don't change the database schema. Use the existing fixture."}}
+{"sessionId":"demo-v1","uuid":"v1-4","parentUuid":"v1-3","timestamp":"2026-07-13T09:01:00Z","type":"tool_result","assetMarkers":["systematic-debugging@v1"],"toolUseResult":{"toolName":"pytest","isError":false,"content":"1 passed"}}

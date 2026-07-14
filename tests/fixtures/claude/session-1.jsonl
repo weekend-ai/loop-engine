@@ -1,0 +1,5 @@
+{"sessionId":"claude-session-1","uuid":"m1","parentUuid":null,"timestamp":"2026-07-13T09:00:00Z","type":"user","cwd":"/repo","message":{"role":"user","content":"Fix the failing authentication test"}}
+{"sessionId":"claude-session-1","uuid":"m2","parentUuid":"m1","timestamp":"2026-07-13T09:00:02Z","type":"assistant","message":{"role":"assistant","content":"I will inspect the failure."}}
+{"sessionId":"claude-session-1","uuid":"m3","parentUuid":"m2","timestamp":"2026-07-13T09:00:05Z","type":"tool_result","toolUseResult":{"toolName":"Bash","input":{"command":"pytest tests/test_auth.py"},"content":"1 failed","isError":true}}
+{"sessionId":"claude-session-1","uuid":"m4","parentUuid":"m3","timestamp":"2026-07-13T09:00:10Z","type":"user","message":{"role":"user","content":"No, don't change the database schema; fix the token validation."}}
+{"sessionId":"claude-session-1","uuid":"m5","parentUuid":"m4","timestamp":"2026-07-13T09:00:20Z","type":"tool_result","toolUseResult":{"toolName":"Bash","input":{"command":"pytest tests/test_auth.py"},"content":"1 passed","isError":false}}
