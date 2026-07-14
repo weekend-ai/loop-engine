@@ -17,6 +17,7 @@ class SourceConfig(StrictConfigModel):
     path: str | None = None
     uri: str | None = None
     aws_profile: str | None = None
+    normalizer: Literal["rule_based", "claude_cli"] = "rule_based"
     max_object_bytes: int = Field(default=10 * 1024 * 1024, ge=1)
     max_total_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
 
@@ -28,6 +29,8 @@ class SourceConfig(StrictConfigModel):
             raise ValueError("local sources require path")
         if self.max_total_bytes < self.max_object_bytes:
             raise ValueError("max_total_bytes must be >= max_object_bytes")
+        if self.type != "claude_code_jsonl" and self.normalizer != "rule_based":
+            raise ValueError("normalizer is only configurable for Claude Code sources")
         return self
 
 
@@ -82,6 +85,16 @@ class EngineConfig(StrictConfigModel):
         source_ids = [source.id for source in self.sources]
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("source ids must be unique")
+        uses_claude_normalization = any(
+            source.type == "claude_code_jsonl" and source.normalizer == "claude_cli"
+            for source in self.sources
+        )
+        if uses_claude_normalization and not self.analysis.external_data_egress_allowed:
+            raise ValueError(
+                "claude_cli source normalization requires "
+                "external_data_egress_allowed: true because redacted raw records are sent "
+                "to the configured Claude provider"
+            )
         return self
 
 

@@ -19,9 +19,12 @@ The engine keeps analysis mechanics separate from data. Log locations, analyzer,
 
 ## Supported inputs
 
-- Claude Code JSONL (`sessionId`, `uuid`, `parentUuid`, messages, tool results)
-  - Filters queue/hook/last-prompt metadata
-  - Extracts current block-array message content, nested model/usage, and API failures
+- Claude Code JSONL
+  - JSONL is first decoded into tolerant raw envelopes; no Claude field types are assumed at this boundary.
+  - `normalizer: rule_based` maps known shapes locally and skips unsupported fields without crashing.
+  - `normalizer: claude_cli` sends bounded, recursively redacted raw records to Claude and validates returned event candidates.
+  - Local finalization owns IDs, UTC timestamps, source namespaces, call/result pairing, and validation.
+  - Canonical events retain MCP server, plugin/skill attribution, tool call IDs, and paired event IDs.
 - Local LiteLLM request JSON/JSONL
 - S3 LiteLLM request JSON/JSONL
 
@@ -66,7 +69,24 @@ Outputs:
     └── report.md
 ```
 
-Switch to Claude semantic analysis:
+Switch only Claude ingestion normalization to Claude (semantic analysis remains local):
+
+```yaml
+sources:
+  - id: claude-local
+    type: claude_code_jsonl
+    path: /home/user/.claude/projects/**/*.jsonl
+    normalizer: claude_cli
+analysis:
+  provider: rule_based
+  model: sonnet
+  timeout_seconds: 120
+  max_input_chars: 100000
+  max_event_chars: 4000
+  external_data_egress_allowed: true
+```
+
+Switch post-reconstruction semantic analysis to Claude:
 
 ```yaml
 analysis:
@@ -80,7 +100,7 @@ analysis:
 
 Claude receives one canonical task bundle at a time and must return strict structured output. Every semantic signal must cite at least one valid event ID. Unknown IDs make the run fail rather than silently creating unsupported evidence.
 
-**Data boundary:** `rule_based` analysis stays local. Selecting `claude_cli` requires `external_data_egress_allowed: true` and sends a field-whitelisted task bundle to the model provider configured in Claude Code. The adapter omits raw references and duplicate `tool_result`, recursively redacts common credential patterns from every emitted string field, truncates fields, enforces a total input limit, and runs Claude with `--bare`, no tools, no slash commands, no session persistence, and a timeout. Redaction is defense in depth, not a complete DLP system; only enable Claude analysis when message and metadata content are approved for that provider.
+**Data boundary:** both `rule_based` semantic analysis and `normalizer: rule_based` stay local. Either Claude mode requires `external_data_egress_allowed: true`. Claude ingestion receives the complete raw record structure after recursive key/value credential redaction and per-string truncation, but never receives local `raw_ref` paths. Records are greedily batched under the total input limit and run with `--bare`, no tools, no slash commands, no session persistence, and a timeout. Claude can only return strict event candidates referring to supplied record IDs; deterministic local code generates final IDs, parses UTC timestamps, validates duplicate block identities, and pairs tool calls/results. Redaction is defense in depth, not a complete DLP system. If both source normalization and semantic analysis use Claude, the engine intentionally makes two separate provider phases.
 
 ## Configuration
 
@@ -92,6 +112,9 @@ sources:
   - id: claude-local
     type: claude_code_jsonl
     path: /home/user/.claude/projects/**/*.jsonl
+    normalizer: rule_based # or claude_cli
+    max_object_bytes: 10485760 # per raw JSONL record
+    max_total_bytes: 104857600
 
   - id: litellm-local
     type: litellm_local_json
@@ -111,7 +134,7 @@ analysis:
   timeout_seconds: 120
   max_input_chars: 100000
   max_event_chars: 4000
-  external_data_egress_allowed: true # required only for claude_cli
+  external_data_egress_allowed: true # required for either claude_cli phase
 
 metrics:
   group_by: [task_type, model, asset_version]

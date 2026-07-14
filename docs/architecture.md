@@ -4,13 +4,13 @@
 
 Phase 0 must prove the loop closes. A composable CLI and file artifacts expose each stage, keep raw traces local, and avoid UI/auth/queue work that does not validate the mechanism.
 
-## ADR-002: Deterministic mechanics, model-assisted semantics
+## ADR-002: Deterministic mechanics, model-assisted interpretation
 
-Parsing, reconstruction, costs, latency, ratios, coverage, and experiment deltas are code. Claude classifies task semantics and proposes hypotheses with evidence. This prevents an LLM from grading its own numeric claims.
+JSON framing, byte limits, redaction, identifiers, timestamp parsing, candidate validation, pairing, reconstruction, costs, ratios, coverage, and experiment deltas are code. Claude may interpret raw provider schema and task semantics, but it returns constrained candidates rather than authoritative IDs or metrics. This prevents an LLM from grading its own numeric claims or controlling trust-boundary mechanics.
 
-## ADR-003: Source adapters normalize into CanonicalEvent
+## ADR-003: Raw envelopes precede CanonicalEvent
 
-Claude Code and LiteLLM formats are edge concerns. Every downstream stage consumes a provider-neutral schema so future OpenTelemetry, Langfuse, or other adapters do not rewrite the loop.
+Claude JSONL first becomes a tolerant `RawRecordEnvelope` whose `raw` value retains unknown fields and types. A configured normalizer interprets envelopes into strict candidates; deterministic local finalization creates provider-neutral `CanonicalEvent` rows. The local fallback maps known shapes and skips unsupported values without crashing. LiteLLM remains a direct deterministic adapter. Future OpenTelemetry, Langfuse, or other adapters can adopt either path without rewriting downstream stages.
 
 ## ADR-004: Proposals are not improvements
 
@@ -22,7 +22,7 @@ The contracts distinguish Session and TaskRun even though the first reconstructi
 
 ## ADR-006: External semantic analysis is explicit and bounded
 
-Rule-based analysis is local. Claude analysis requires an explicit data-egress opt-in, sends only a field whitelist with best-effort secret redaction and size limits, and invokes Claude Code in bare/no-tools/no-session mode with a timeout. This reduces accidental exposure but is not a replacement for organizational DLP approval.
+Rule-based normalization and analysis are local. Either Claude phase requires explicit data-egress opt-in. Raw normalization preserves record structure but sends only recursively redacted/truncated values and opaque record IDs—never local paths—under per-record and total limits. Semantic analysis sends a canonical field whitelist. Both invoke Claude Code in bare/no-tools/no-session mode with a timeout. These controls reduce accidental exposure but do not replace organizational DLP approval.
 
 ## ADR-007: DuckDB is a current snapshot, not an append-only audit log
 

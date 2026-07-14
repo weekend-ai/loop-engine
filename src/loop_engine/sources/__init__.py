@@ -1,16 +1,35 @@
 from __future__ import annotations
 
-from loop_engine.config import SourceConfig
+from loop_engine.config import AnalysisConfig, SourceConfig
 from loop_engine.sources.base import EventSource
 from loop_engine.sources.claude_jsonl import ClaudeCodeJsonlSource
+from loop_engine.sources.claude_normalization import ClaudeCliRecordNormalizer
 from loop_engine.sources.litellm import LiteLLMLocalJsonSource, LiteLLMS3JsonSource
 
 
-def build_source(config: SourceConfig) -> EventSource:
+def build_source(
+    config: SourceConfig, analysis: AnalysisConfig | None = None
+) -> EventSource:
     if config.type == "claude_code_jsonl":
         if config.path is None:
             raise ValueError("Claude Code sources require path")
-        return ClaudeCodeJsonlSource(config.id, config.path)
+        normalizer = None
+        if config.normalizer == "claude_cli":
+            if analysis is None:
+                raise ValueError("Claude normalization requires analysis settings")
+            normalizer = ClaudeCliRecordNormalizer(
+                model=analysis.model,
+                timeout_seconds=analysis.timeout_seconds,
+                max_input_chars=analysis.max_input_chars,
+                max_record_chars=analysis.max_event_chars,
+            )
+        return ClaudeCodeJsonlSource(
+            config.id,
+            config.path,
+            normalizer=normalizer,
+            max_record_bytes=config.max_object_bytes,
+            max_total_bytes=config.max_total_bytes,
+        )
     if config.type == "litellm_local_json":
         if config.path is None:
             raise ValueError("local LiteLLM sources require path")

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from collections.abc import Callable
 from typing import Any
 
 from loop_engine.models import CanonicalEvent, TaskRun, TaskSemanticAnalysis
+from loop_engine.security import redact_value
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -15,37 +15,6 @@ Classify intent and task type, then identify semantic outcome signals. Every sig
 specific event IDs from the supplied bundle. Do not treat silence as success or abandonment.
 Root causes are hypotheses, never facts. Do not calculate aggregate metrics.
 """
-
-_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)(?<![\w-])([\"']?)(api[_-]?key|access[_-]?token|token|authorization|"
-    r"password|passwd|secret)\1(\s*[:=]\s*)([\"']?)([^\"'\s,;}]+)\4"
-)
-_BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
-_PROVIDER_TOKEN = re.compile(r"\b(?:sk-ant-|sk-)[A-Za-z0-9_-]{12,}\b")
-_AWS_ACCESS_KEY = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
-
-
-def _redact(value: str | None, max_chars: int) -> str | None:
-    if value is None:
-        return None
-    redacted = _SECRET_ASSIGNMENT.sub(r"\1\2\1\3\4[REDACTED]\4", value)
-    redacted = _BEARER_TOKEN.sub("Bearer [REDACTED]", redacted)
-    redacted = _PROVIDER_TOKEN.sub("[REDACTED]", redacted)
-    redacted = _AWS_ACCESS_KEY.sub("[REDACTED]", redacted)
-    if len(redacted) > max_chars:
-        return redacted[:max_chars] + "...[TRUNCATED]"
-    return redacted
-
-
-def _redact_value(value: Any, max_chars: int) -> Any:
-    if isinstance(value, str):
-        return _redact(value, max_chars)
-    if isinstance(value, list):
-        return [_redact_value(item, max_chars) for item in value]
-    if isinstance(value, dict):
-        return {key: _redact_value(item, max_chars) for key, item in value.items()}
-    return value
-
 
 class ClaudeCliAnalyzer:
     def __init__(
@@ -70,7 +39,7 @@ class ClaudeCliAnalyzer:
             "task": {
                 "task_id": task.task_id,
                 "task_type": task.task_type,
-                "intent": _redact(task.intent, self.max_event_chars),
+                "intent": task.intent,
                 "event_ids": task.event_ids,
                 "model_ids": task.model_ids,
                 "tool_names": task.tool_names,
@@ -84,7 +53,7 @@ class ClaudeCliAnalyzer:
                     "timestamp": event.timestamp.isoformat(),
                     "role": event.role,
                     "event_type": event.event_type,
-                    "content": _redact(event.content, self.max_event_chars),
+                    "content": event.content,
                     "tool_name": event.tool_name,
                     "status": event.status,
                 }
@@ -95,7 +64,7 @@ class ClaudeCliAnalyzer:
                 "evidence quotes. Unknown outcomes must remain unknown."
             ),
         }
-        bundle = _redact_value(bundle, self.max_event_chars)
+        bundle = redact_value(bundle, self.max_event_chars)
         serialized_bundle = json.dumps(bundle, ensure_ascii=False)
         if len(serialized_bundle) > self.max_input_chars:
             raise RuntimeError(

@@ -64,7 +64,7 @@ class LoopEngine:
     def run(self) -> RunResult:
         events: list[CanonicalEvent] = []
         for source_config in self.config.sources:
-            source = build_source(source_config)
+            source = build_source(source_config, self.config.analysis)
             events.extend(source.iter_events())
         events.sort(key=lambda event: (event.timestamp, event.event_id))
 

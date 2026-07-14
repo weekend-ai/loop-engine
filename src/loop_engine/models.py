@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CanonicalEvent(BaseModel):
@@ -28,8 +28,64 @@ class CanonicalEvent(BaseModel):
     cost_usd: float | None = None
     latency_ms: int | None = None
     message_id: str | None = None
+    tool_call_id: str | None = None
+    paired_event_id: str | None = None
+    mcp_server: str | None = None
+    plugin_name: str | None = None
+    attribution_skill: str | None = None
     asset_markers: list[str] = Field(default_factory=list)
     raw_ref: str
+
+
+class RawRecordEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    source_id: str
+    record_id: str
+    raw_ref: str
+    line_number: int = Field(ge=1)
+    raw: Any
+
+
+class CanonicalEventCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    record_id: str
+    block_index: int = Field(default=0, ge=0)
+    timestamp: str
+    event_type: Literal["message", "tool_use", "tool_result", "api_error"]
+    session_hint: str | None = None
+    parent_hint: str | None = None
+    actor_id: str | None = None
+    role: str | None = None
+    content: str | None = None
+    model: str | None = None
+    tool_name: str | None = None
+    tool_arguments: dict[str, Any] | None = None
+    tool_result: str | None = None
+    status: Literal["success", "error"] | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    message_id: str | None = None
+    tool_call_id: str | None = None
+    mcp_server: str | None = None
+    plugin_name: str | None = None
+    attribution_skill: str | None = None
+    asset_markers: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_tool_contract(self) -> CanonicalEventCandidate:
+        if self.event_type == "tool_result" and self.role != "tool":
+            raise ValueError("tool_result candidates require role='tool'")
+        if self.event_type == "tool_use" and not self.tool_name:
+            raise ValueError("tool_use candidates require tool_name")
+        return self
+
+
+class CanonicalEventCandidateBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    events: list[CanonicalEventCandidate] = Field(default_factory=list)
 
 
 class AssetExposure(BaseModel):
