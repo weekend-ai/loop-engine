@@ -5,6 +5,7 @@ from loop_engine.sources.base import EventSource
 from loop_engine.sources.claude_jsonl import ClaudeCodeJsonlSource
 from loop_engine.sources.claude_normalization import ClaudeSdkRecordNormalizer
 from loop_engine.sources.litellm import LiteLLMLocalJsonSource, LiteLLMS3JsonSource
+from loop_engine.sources.raw_trace import RawTraceSource
 
 
 def build_source(
@@ -46,5 +47,22 @@ def build_source(
             config.aws_profile,
             max_object_bytes=config.max_object_bytes,
             max_total_bytes=config.max_total_bytes,
+        )
+    if config.type == "raw_trace":
+        if config.path is None:
+            raise ValueError("raw_trace sources require path")
+        if analysis is None:
+            raise ValueError("raw_trace sources require analysis settings")
+        return RawTraceSource(
+            config.id,
+            config.path,
+            model=analysis.model,
+            timeout_seconds=analysis.timeout_seconds,
+            max_input_chars=analysis.max_input_chars,
+            max_artifact_chars=analysis.max_event_chars,
+            max_output_tokens=analysis.max_output_tokens,
+            redact_before_egress=analysis.redact_before_egress,
+            provider_name=analysis.provider_name,
+            repair=analysis.repair,
         )
     raise ValueError(f"Unsupported source type: {config.type}")

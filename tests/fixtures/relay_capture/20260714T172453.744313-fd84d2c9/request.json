@@ -1,0 +1,57 @@
+{
+  "headers": [
+    ["Authorization", "Bearer sk-ant-api03-FAKE_TOKEN_DO_NOT_USE_abcdef123456_TESTONLY"],
+    ["x-api-key", "sk-ant-api03-FAKE_TOKEN_DO_NOT_USE_abcdef123456_TESTONLY"],
+    ["Cookie", "session=s%3AfakeSessionId123.fakeSignature456"],
+    ["Content-Type", "application/json"]
+  ],
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 4096,
+  "system": "You are a DataHub metadata assistant. You help users discover and understand datasets across the data platform. Use the available MCP tools to search for datasets and retrieve their schemas from DataHub.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Find me the customer_events dataset on Snowflake and show me its schema."
+    }
+  ],
+  "tools": [
+    {
+      "name": "mcp__datahub__search_datasets",
+      "description": "Search for datasets in DataHub by keyword, platform, or tags. Returns matching dataset URNs with metadata.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query string to match against dataset names and descriptions"
+          },
+          "platform": {
+            "type": "string",
+            "description": "Filter by data platform (e.g. snowflake, bigquery, redshift)",
+            "enum": ["snowflake", "bigquery", "redshift", "postgres", "mysql"]
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of results to return (default: 10)",
+            "default": 10
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "mcp__datahub__get_dataset_schema",
+      "description": "Retrieve the schema (field names, types, descriptions) for a specific dataset by its DataHub URN.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dataset_urn": {
+            "type": "string",
+            "description": "The DataHub URN of the dataset (e.g. urn:li:dataset:(urn:li:dataPlatform:snowflake,db.schema.table,PROD))"
+          }
+        },
+        "required": ["dataset_urn"]
+      }
+    }
+  ]
+}

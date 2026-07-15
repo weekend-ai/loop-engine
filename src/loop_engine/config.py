@@ -13,7 +13,7 @@ class StrictConfigModel(BaseModel):
 
 class SourceConfig(StrictConfigModel):
     id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    type: Literal["claude_code_jsonl", "litellm_local_json", "litellm_s3_json"]
+    type: Literal["claude_code_jsonl", "litellm_local_json", "litellm_s3_json", "raw_trace"]
     path: str | None = None
     uri: str | None = None
     aws_profile: str | None = None
@@ -29,8 +29,12 @@ class SourceConfig(StrictConfigModel):
             raise ValueError("local sources require path")
         if self.max_total_bytes < self.max_object_bytes:
             raise ValueError("max_total_bytes must be >= max_object_bytes")
-        if self.type != "claude_code_jsonl" and self.normalizer != "rule_based":
-            raise ValueError("normalizer is only configurable for Claude Code sources")
+        if self.type == "raw_trace" and self.normalizer != "claude_sdk":
+            raise ValueError("raw_trace sources require normalizer: claude_sdk")
+        if self.type not in ("claude_code_jsonl", "raw_trace") and self.normalizer != "rule_based":
+            raise ValueError(
+                "normalizer is only configurable for Claude Code and raw_trace sources"
+            )
         return self
 
 
@@ -93,9 +97,13 @@ class EngineConfig(StrictConfigModel):
             source.type == "claude_code_jsonl" and source.normalizer == "claude_sdk"
             for source in self.sources
         )
-        if uses_claude_normalization and not self.analysis.external_data_egress_allowed:
+        uses_raw_trace = any(
+            source.type == "raw_trace" for source in self.sources
+        )
+        needs_egress = uses_claude_normalization or uses_raw_trace
+        if needs_egress and not self.analysis.external_data_egress_allowed:
             raise ValueError(
-                "claude_sdk source normalization requires "
+                "claude_sdk source normalization and raw_trace sources require "
                 "external_data_egress_allowed: true because raw records are sent to "
                 "the configured Anthropic-compatible endpoint"
             )

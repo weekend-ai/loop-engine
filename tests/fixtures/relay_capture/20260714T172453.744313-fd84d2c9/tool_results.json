@@ -1,0 +1,16 @@
+{
+  "tool_results": [
+    {
+      "tool_use_id": "toolu_01search",
+      "type": "tool_result",
+      "content": "[{\"urn\": \"urn:li:dataset:(urn:li:dataPlatform:snowflake,prod.analytics.customer_events,PROD)\", \"name\": \"customer_events\", \"platform\": \"snowflake\"}]",
+      "is_error": false
+    },
+    {
+      "tool_use_id": "toolu_02schema",
+      "type": "tool_result",
+      "content": "{\"fields\": [{\"name\": \"event_id\", \"type\": \"STRING\"}, {\"name\": \"customer_id\", \"type\": \"INTEGER\"}, {\"name\": \"event_type\", \"type\": \"STRING\"}]}",
+      "is_error": false
+    }
+  ]
+}
