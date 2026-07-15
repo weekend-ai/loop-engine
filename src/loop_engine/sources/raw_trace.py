@@ -348,9 +348,9 @@ def validate_bundle(
 def _frame_artifact(artifact: RawArtifactEnvelope) -> list[dict[str, str]]:
     """Frame an artifact into stable source records for completeness review.
 
-    Returns a list of {record_id, artifact_id, description} for each
-    observable unit: NDJSON lines, JSON keys/items, SSE events, or text
-    sections.
+    Returns a list of {record_id, artifact_id, event_type} for each
+    observable unit: NDJSON lines with parsed SSE event types, JSON
+    keys/items, or text sections.
     """
     records: list[dict[str, str]] = []
     content = artifact.content.strip()
@@ -361,21 +361,17 @@ def _frame_artifact(artifact: RawArtifactEnvelope) -> list[dict[str, str]]:
         for i, line in enumerate(content.splitlines()):
             line = line.strip()
             if line:
+                event_type = "unknown"
                 try:
                     parsed = json.loads(line)
                     event_type = parsed.get("type", "unknown")
-                    record_id = f"{artifact.artifact_id}:line:{i}"
-                    records.append({
-                        "record_id": record_id,
-                        "artifact_id": artifact.artifact_id,
-                        "description": f"NDJSON line {i}: {event_type}",
-                    })
                 except json.JSONDecodeError:
-                    records.append({
-                        "record_id": f"{artifact.artifact_id}:line:{i}",
-                        "artifact_id": artifact.artifact_id,
-                        "description": f"NDJSON line {i}: unparseable",
-                    })
+                    event_type = "unparseable"
+                records.append({
+                    "record_id": f"{artifact.artifact_id}:line:{i}",
+                    "artifact_id": artifact.artifact_id,
+                    "event_type": event_type,
+                })
     elif artifact.media_type == "application/json":
         try:
             parsed = json.loads(content)
@@ -384,29 +380,28 @@ def _frame_artifact(artifact: RawArtifactEnvelope) -> list[dict[str, str]]:
                     records.append({
                         "record_id": f"{artifact.artifact_id}:key:{key}",
                         "artifact_id": artifact.artifact_id,
-                        "description": f"JSON key: {key}",
+                        "event_type": f"json_key:{key}",
                     })
             elif isinstance(parsed, list):
                 for i, _item in enumerate(parsed):
                     records.append({
                         "record_id": f"{artifact.artifact_id}:item:{i}",
                         "artifact_id": artifact.artifact_id,
-                        "description": f"JSON item [{i}]",
+                        "event_type": f"json_item:{i}",
                     })
         except json.JSONDecodeError:
             records.append({
                 "record_id": f"{artifact.artifact_id}:raw",
                 "artifact_id": artifact.artifact_id,
-                "description": "Unparseable JSON",
+                "event_type": "unparseable_json",
             })
     else:
-        # Text sections: split on blank lines
         sections = re.split(r"\n\s*\n", content)
         for i, _section in enumerate(sections):
             records.append({
                 "record_id": f"{artifact.artifact_id}:section:{i}",
                 "artifact_id": artifact.artifact_id,
-                "description": f"Text section {i}",
+                "event_type": f"text_section:{i}",
             })
     return records
 
@@ -421,6 +416,50 @@ def _build_manifest(
     return manifest
 
 
+def _resolve_json_path(content: str, path: str) -> Any | None:
+    """Resolve a simple JSON path like $.tools or $.messages from content."""
+    if not path.startswith("$."):
+        return None
+    key = path[2:].split("[")[0]  # $.tools → tools
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict) and key in parsed:
+            return parsed[key]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
+def _remeasure_context_components(
+    bundle_result: NormalizedTraceBundle,
+    artifacts: list[RawArtifactEnvelope],
+) -> None:
+    """Re-measure context component char/item counts from cited local values.
+
+    When a component cites a resolvable JSON path in a local artifact,
+    the locally-measured values replace the LLM-supplied ones.
+    """
+    artifacts_by_id = {a.artifact_id: a for a in artifacts}
+    for comp in bundle_result.context_components:
+        for ref in comp.evidence:
+            if ref.locator is None:
+                continue
+            artifact = artifacts_by_id.get(ref.artifact_id)
+            if artifact is None:
+                continue
+            resolved = _resolve_json_path(
+                artifact.content, ref.locator,
+            )
+            if resolved is None:
+                continue
+            # Re-measure from the resolved value
+            serialized = json.dumps(resolved, ensure_ascii=False)
+            comp.char_count = len(serialized)
+            if isinstance(resolved, (list, dict)):
+                comp.item_count = len(resolved)
+            break  # First resolvable ref wins
+
+
 def _review_completeness(
     bundle_result: NormalizedTraceBundle,
     manifest: list[dict[str, str]],
@@ -428,67 +467,79 @@ def _review_completeness(
 ) -> CompletenessReview:
     """Compare source manifest with normalized inventory.
 
-    Checks for:
-    - Missing user/assistant messages
-    - Missing tool calls/results
-    - Missing final assistant response after tool use
-    - Invocations that were not extracted
+    Detection works from parsed SSE event types in the manifest, not
+    from free-text description matching.
     """
     issues: list[CompletenessIssue] = []
 
-    # Build normalized inventory: which artifacts/records were covered
     covered_artifacts: set[str] = set(
         bundle_result.coverage.artifacts_used
     )
-    # Check NDJSON response streams for SSE events
+
+    # Build a set of SSE event types present in covered NDJSON artifacts
+    sse_types: dict[str, list[dict[str, str]]] = {}
     for rec in manifest:
-        artifact_id = rec["artifact_id"]
-        if artifact_id not in covered_artifacts:
-            continue
-        desc = rec["description"]
-        # Check for final assistant message after tool results
-        if "message_stop" in desc or "message_delta" in desc:
-            # Verify this content is reflected in the bundle
-            pass  # Structural check below
+        if rec["artifact_id"] in covered_artifacts:
+            et = rec["event_type"]
+            sse_types.setdefault(et, []).append(rec)
 
-    # Check: if tool_calls exist but no messages after them,
-    # the final response may be missing
+    # Normalized inventory: what's in the bundle
+    normalized_roles = [m.role for m in bundle_result.messages]
     has_tool_results = len(bundle_result.tool_results) > 0
-    assistant_msgs = [
-        m for m in bundle_result.messages if m.role == "assistant"
-    ]
 
-    # If there are tool results but no assistant message after tool use,
-    # and the stop_reason is "end_turn", a final response was likely dropped
+    # --- Check 1: content_block_start (text) in source but no
+    # corresponding assistant message after tool results ---
+    # A content_block_start with index > the tool-call blocks means
+    # a final assistant response exists in the stream.
+    text_blocks_in_source = len(
+        sse_types.get("content_block_start", [])
+    )
+    assistant_msgs_in_bundle = sum(
+        1 for r in normalized_roles if r == "assistant"
+    )
+
+    # If source has text content blocks AND tool results, but the
+    # bundle has fewer assistant messages than text blocks, something
+    # was dropped.
     if (has_tool_results
-            and bundle_result.http.stop_reason == "end_turn"
-            and len(assistant_msgs) <= 1):
-        # Check manifest for evidence of a final response block
-        for rec in manifest:
-            if "content_block" in rec["description"] and "text" in rec[
-                "description"
-            ]:
-                # There's a text content block in the source that might
-                # not be in the normalized output
-                issues.append(CompletenessIssue(
-                    record_id=rec["record_id"],
-                    artifact_id=rec["artifact_id"],
-                    field="messages",
-                    description=(
-                        "Source contains a text content block that may "
-                        "represent a final assistant response not "
-                        "captured in normalized messages."
-                    ),
-                ))
+            and text_blocks_in_source > 0
+            and assistant_msgs_in_bundle < text_blocks_in_source):
+        # Find which content_block_start records are unmatched
+        for rec in sse_types.get("content_block_start", []):
+            issues.append(CompletenessIssue(
+                record_id=rec["record_id"],
+                artifact_id=rec["artifact_id"],
+                field="messages",
+                description=(
+                    "Source SSE stream contains a content_block_start "
+                    "event not reflected in normalized messages. "
+                    "A final assistant response may have been dropped."
+                ),
+            ))
 
-    # Validate that issues cite valid records and artifacts
+    # --- Check 2: message_stop without corresponding message ---
+    if "message_stop" in sse_types and not normalized_roles:
+        for rec in sse_types["message_stop"]:
+            issues.append(CompletenessIssue(
+                record_id=rec["record_id"],
+                artifact_id=rec["artifact_id"],
+                field="messages",
+                description=(
+                    "Source contains message_stop but no messages "
+                    "were extracted."
+                ),
+            ))
+
+    # Validate: reject issues citing unknown artifact IDs
     validated_issues = []
     for issue in issues:
-        if issue.artifact_id in valid_artifact_ids:
-            # Check record_id starts with a valid artifact_id
-            record_artifact = issue.record_id.split(":")[0]
-            if record_artifact in valid_artifact_ids:
-                validated_issues.append(issue)
+        if issue.artifact_id not in valid_artifact_ids:
+            continue
+        # record_id must start with a valid artifact_id prefix
+        rec_prefix = issue.record_id.split(":")[0]
+        if rec_prefix not in valid_artifact_ids:
+            continue
+        validated_issues.append(issue)
 
     return CompletenessReview(
         complete=len(validated_issues) == 0,
@@ -934,6 +985,9 @@ class RawTraceSource:
         for bundle in self.iter_bundles():
             result = self._normalize_bundle(bundle)
 
+            # Re-measure context components from local artifacts
+            _remeasure_context_components(result, bundle)
+
             # Completeness review if enabled
             if self.completeness_review:
                 manifest = _build_manifest(bundle)
@@ -958,27 +1012,33 @@ class RawTraceSource:
                             "and final responses in the output.",
                         ],
                     )
-                    try:
-                        repaired = parse_structured_response(
-                            response,
-                            NormalizedTraceBundle,
-                            "raw_trace completeness repair",
+                    # Parse, validate, and re-review — propagate errors
+                    repaired = parse_structured_response(
+                        response,
+                        NormalizedTraceBundle,
+                        "raw_trace completeness repair",
+                    )
+                    assert isinstance(repaired, NormalizedTraceBundle)
+                    errors = validate_bundle(repaired, valid_ids)
+                    if errors:
+                        raise RuntimeError(
+                            "Completeness repair produced invalid "
+                            "output: " + "; ".join(errors)
                         )
-                        assert isinstance(repaired, NormalizedTraceBundle)
-                        errors = validate_bundle(
-                            repaired, valid_ids,
-                        )
-                        if not errors:
-                            # Re-review
-                            review2 = _review_completeness(
-                                repaired, manifest, valid_ids,
+                    review2 = _review_completeness(
+                        repaired, manifest, valid_ids,
+                    )
+                    if review2.complete:
+                        result = repaired
+                    else:
+                        raise RuntimeError(
+                            "Completeness review still incomplete "
+                            "after repair: "
+                            + "; ".join(
+                                iss.description
+                                for iss in review2.issues
                             )
-                            if review2.complete or len(
-                                review2.issues
-                            ) < len(review.issues):
-                                result = repaired
-                    except (RuntimeError, Exception):
-                        pass  # Keep original if repair fails
+                        )
 
             # Update coverage from LLM's self-report
             self.coverage.normalized_artifacts += len(

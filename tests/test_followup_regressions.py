@@ -288,39 +288,45 @@ def test_raw_trace_propagation_to_task_run() -> None:
 
 
 def test_local_context_measurement() -> None:
-    """Context char/item counts match the cited request JSON."""
+    """Production code re-measures context from cited local JSON.
+
+    The LLM may report wrong char/item counts. _remeasure_context_components
+    resolves the cited JSON path and overwrites with the actual values.
+    """
+    from loop_engine.sources.raw_trace import _remeasure_context_components
+
     request_content = (FIXTURE_DIR / "request.json").read_text()
     parsed = json.loads(request_content)
+    assert "tools" in parsed, "Fixture must have a 'tools' key"
 
-    # The fixture request.json has a "tools" array
-    if "tools" in parsed:
-        tools_json = json.dumps(parsed["tools"])
-        actual_char_count = len(tools_json)
-        actual_item_count = len(parsed["tools"])
+    tools_json = json.dumps(parsed["tools"], ensure_ascii=False)
+    actual_char_count = len(tools_json)
+    actual_item_count = len(parsed["tools"])
 
-        # Build a bundle where context component claims match
-        _, artifact_ids, _ = _get_source_and_ids()
-        response = _make_full_bundle(artifact_ids)
-        # The tool_definitions component should reflect actual values
-        comp = response["context_components"][1]
-        assert comp["kind"] == "tool_definitions"
-        # Override with locally-measured values
-        comp["char_count"] = actual_char_count
-        comp["item_count"] = actual_item_count
+    _, artifact_ids, _ = _get_source_and_ids()
+    response = _make_full_bundle(artifact_ids)
+    # Set deliberately WRONG values from the LLM
+    comp = response["context_components"][1]
+    assert comp["kind"] == "tool_definitions"
+    comp["char_count"] = 9999  # wrong
+    comp["item_count"] = 9999  # wrong
 
-        provider = _FakeProvider(response)
-        source = RawTraceSource(
-            "relay", str(FIXTURE_DIR), provider=provider,
-        )
-        events = list(source.iter_events())
-        tasks = reconstruct_tasks(events)
-        tool_comp = [
-            c for c in tasks[0].context_components
-            if c.kind == "tool_definitions"
-        ]
-        assert len(tool_comp) == 1
-        assert tool_comp[0].char_count == actual_char_count
-        assert tool_comp[0].item_count == actual_item_count
+    bundle_result = NormalizedTraceBundle.model_validate(response)
+
+    # Verify the wrong values are there
+    assert bundle_result.context_components[1].char_count == 9999
+
+    # Get the actual artifacts for local resolution
+    fake = _FakeProvider({})
+    source = RawTraceSource("relay", str(FIXTURE_DIR), provider=fake)
+    bundle_artifacts = list(source.iter_bundles())[0]
+
+    # Production code re-measures
+    _remeasure_context_components(bundle_result, bundle_artifacts)
+
+    # Values should now match the actual local JSON
+    assert bundle_result.context_components[1].char_count == actual_char_count
+    assert bundle_result.context_components[1].item_count == actual_item_count
 
 
 # ===========================================================================
@@ -330,22 +336,35 @@ def test_local_context_measurement() -> None:
 
 def test_completeness_detects_dropped_final_response() -> None:
     """A final assistant response omitted by initial normalization is
-    detected by the completeness review."""
+    detected by the completeness review.
+
+    The fixture response_stream.jsonl has 3 content_block_start events.
+    If the bundle only has 1 assistant message, the review must find
+    issues — not pass silently.
+    """
     _, artifact_ids, bundle_artifacts = _get_source_and_ids()
-    # Build a response that dropped the final answer (stop_reason=end_turn
-    # but only 1 assistant message with tool results present)
+    # Build a response that dropped the final answer:
+    # has tool_results but only the user message (0 assistant messages),
+    # while the source SSE stream has content_block_start events.
     incomplete = _make_full_bundle(artifact_ids)
-    incomplete["http"]["stop_reason"] = "end_turn"
-    incomplete["messages"] = [incomplete["messages"][0]]  # only user
+    incomplete["messages"] = [incomplete["messages"][0]]  # only user msg
 
     valid_ids = set(artifact_ids.values())
     bundle_result = NormalizedTraceBundle.model_validate(incomplete)
     manifest = _build_manifest(bundle_artifacts)
 
     review = _review_completeness(bundle_result, manifest, valid_ids)
-    # Should find issues since stop=end_turn, has tool_results, <=1 assistant msg
-    assert not review.complete or len(review.issues) >= 0
-    # The review detects content_block text entries as potential missing responses
+    # MUST detect the missing response — not silently pass
+    assert not review.complete, (
+        "Review should detect dropped final response but reported complete"
+    )
+    assert len(review.issues) > 0, (
+        "Review should have at least one issue for the missing response"
+    )
+    assert any(
+        "content_block_start" in iss.description
+        for iss in review.issues
+    ), "Issue should reference the content_block_start SSE event"
 
 
 # ===========================================================================

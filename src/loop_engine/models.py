@@ -39,8 +39,8 @@ class CanonicalEvent(BaseModel):
     cache_read_input_tokens: int | None = None
     http_status: int | None = None
     stop_reason: str | None = None
-    invocations: list[Any] = Field(default_factory=list)
-    context_components: list[Any] = Field(default_factory=list)
+    invocations: list[dict[str, Any]] = Field(default_factory=list)
+    context_components: list[dict[str, Any]] = Field(default_factory=list)
     coverage_artifacts_used: list[str] = Field(default_factory=list)
     coverage_artifacts_skipped: list[str] = Field(default_factory=list)
     coverage_unresolved_fields: list[str] = Field(default_factory=list)
@@ -105,8 +105,8 @@ class CanonicalEventCandidate(BaseModel):
     cache_read_input_tokens: int | None = Field(default=None, ge=0)
     http_status: int | None = None
     stop_reason: str | None = None
-    invocations: list[Any] = Field(default_factory=list)
-    context_components: list[Any] = Field(default_factory=list)
+    invocations: list[dict[str, Any]] = Field(default_factory=list)
+    context_components: list[dict[str, Any]] = Field(default_factory=list)
     coverage_artifacts_used: list[str] = Field(default_factory=list)
     coverage_artifacts_skipped: list[str] = Field(default_factory=list)
     coverage_unresolved_fields: list[str] = Field(default_factory=list)
