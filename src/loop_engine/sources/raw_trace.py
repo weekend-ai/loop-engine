@@ -102,6 +102,12 @@ RULES:
   string. Derive mcp_server from tool names like mcp__<server>__<method>.
 - For tool results: extract tool_call_id, content, is_error.
 - List pending_tool_calls: tool_call_ids with a call but no result.
+- Extract model invocations: each API call (including intermediate tool_use
+  and terminal end_turn) as a separate OperationalInvocation with model,
+  timestamps, latency, HTTP status, stop_reason, token/cache/thinking usage.
+- Extract context components: identify non-conversation context sections
+  (system_prompt, skill_instructions, tool_definitions, session_context,
+  harness, messages) with character/item counts and cacheability.
 - Report coverage: which artifacts you used, which you skipped, and
   which fields you could not map.
 - Do not invent data absent from the artifacts.
@@ -341,6 +347,10 @@ def _bundle_to_candidates(
     model = bundle_result.http.model
     input_tokens = bundle_result.usage.input_tokens
     output_tokens = bundle_result.usage.output_tokens
+    cache_creation = bundle_result.usage.cache_creation_input_tokens
+    cache_read = bundle_result.usage.cache_read_input_tokens
+    http_status = bundle_result.http.status_code
+    stop_reason = bundle_result.http.stop_reason
 
     block_index = 0
 
@@ -372,6 +382,14 @@ def _bundle_to_candidates(
             message_id=message_id,
             input_tokens=input_tokens if assign_usage else None,
             output_tokens=output_tokens if assign_usage else None,
+            cache_creation_input_tokens=(
+                cache_creation if assign_usage else None
+            ),
+            cache_read_input_tokens=(
+                cache_read if assign_usage else None
+            ),
+            http_status=http_status if assign_usage else None,
+            stop_reason=stop_reason if assign_usage else None,
             role=role,
             content=content,
             tool_name=tool_name,

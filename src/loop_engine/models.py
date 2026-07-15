@@ -35,6 +35,10 @@ class CanonicalEvent(BaseModel):
     plugin_name: str | None = None
     attribution_skill: str | None = None
     asset_markers: list[str] = Field(default_factory=list)
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+    http_status: int | None = None
+    stop_reason: str | None = None
     raw_ref: str
 
     @property
@@ -92,6 +96,10 @@ class CanonicalEventCandidate(BaseModel):
     plugin_name: str | None = None
     attribution_skill: str | None = None
     asset_markers: list[str] = Field(default_factory=list)
+    cache_creation_input_tokens: int | None = Field(default=None, ge=0)
+    cache_read_input_tokens: int | None = Field(default=None, ge=0)
+    http_status: int | None = None
+    stop_reason: str | None = None
 
     @model_validator(mode="after")
     def validate_tool_contract(self) -> CanonicalEventCandidate:
@@ -290,6 +298,68 @@ class TraceCoverage(BaseModel):
     )
 
 
+class OperationalInvocation(BaseModel):
+    """Per-call telemetry for a model invocation within a trace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    invocation_id: str
+    model: str | None
+    start_timestamp: str | None
+    end_timestamp: str | None
+    latency_ms: int | None
+    http_status: int | None
+    stop_reason: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_creation_input_tokens: int | None
+    cache_read_input_tokens: int | None
+    thinking_tokens: int | None
+    tier: str | None = Field(
+        description="Model tier: e.g. 'sonnet', 'haiku', 'opus'."
+    )
+    evidence: list[EvidenceRef]
+
+
+class ContextComponent(BaseModel):
+    """A measured section of the context window."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(
+        description=(
+            "Type: system_prompt, skill_instructions, tool_definitions, "
+            "session_context, harness, messages, or custom."
+        )
+    )
+    name: str | None
+    char_count: int | None
+    item_count: int | None
+    cacheable: bool | None
+    summary: str | None
+    evidence: list[EvidenceRef]
+
+
+class CompletenessIssue(BaseModel):
+    """A specific gap found during completeness review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    record_id: str
+    artifact_id: str
+    field: str
+    description: str
+
+
+class CompletenessReview(BaseModel):
+    """Result of the structured completeness review pass."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    complete: bool
+    issues: list[CompletenessIssue]
+
+
 class NormalizedTraceBundle(BaseModel):
     """Complete LLM-first normalization of a raw trace bundle.
 
@@ -316,6 +386,8 @@ class NormalizedTraceBundle(BaseModel):
             "tool_call_ids that have a call but no result in this bundle."
         )
     )
+    invocations: list[OperationalInvocation]
+    context_components: list[ContextComponent]
     coverage: TraceCoverage
 
 
@@ -403,8 +475,7 @@ class TaskSemanticAnalysis(BaseModel):
     outcome_signals: list[SemanticFinding]
     missing_evidence: list[str]
     root_cause_hypotheses: list[str]
-    # Legacy compat — kept for deterministic signal bridge
-    signals: list[SemanticSignalCandidate] = Field(default_factory=list)
+    signals: list[SemanticSignalCandidate]
 
 
 class TaskRun(BaseModel):
@@ -422,6 +493,14 @@ class TaskRun(BaseModel):
     output_tokens: int = 0
     cost_usd: float | None = None
     latency_ms: int | None = None
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    http_statuses: list[int] = Field(default_factory=list)
+    stop_reasons: list[str] = Field(default_factory=list)
+    invocations: list[OperationalInvocation] = Field(default_factory=list)
+    context_components: list[ContextComponent] = Field(default_factory=list)
+    coverage_artifacts_used: list[str] = Field(default_factory=list)
+    coverage_unresolved_fields: list[str] = Field(default_factory=list)
     outcome_signals: list[OutcomeSignal] = Field(default_factory=list)
     reconstruction_method: str = "source_session_hint"
     reconstruction_confidence: float = Field(default=1.0, ge=0, le=1)
@@ -444,7 +523,7 @@ class ImprovementProposal(BaseModel):
     title: str
     hypothesis: str
     target_layer: str
-    evidence_signal_ids: list[str] = Field(default_factory=list)
+    evidence_event_ids: list[str] = Field(default_factory=list)
     recommended_experiment: str
     status: Literal["proposed", "approved", "rejected", "deployed"] = "proposed"
 

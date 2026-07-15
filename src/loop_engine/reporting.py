@@ -121,6 +121,16 @@ def write_outputs(
             lines.append(
                 f"| Output tokens | {task.output_tokens:,} |"
             )
+            if task.cache_creation_input_tokens:
+                lines.append(
+                    f"| Cache creation tokens | "
+                    f"{task.cache_creation_input_tokens:,} |"
+                )
+            if task.cache_read_input_tokens:
+                lines.append(
+                    f"| Cache read tokens | "
+                    f"{task.cache_read_input_tokens:,} |"
+                )
             if task.cost_usd is not None:
                 lines.append(
                     f"| Cost | ${task.cost_usd:.4f} |"
@@ -129,7 +139,84 @@ def write_outputs(
                 lines.append(
                     f"| Latency | {task.latency_ms:,} ms |"
                 )
+            if task.http_statuses:
+                lines.append(
+                    f"| HTTP status | "
+                    f"{', '.join(str(s) for s in task.http_statuses)} |"
+                )
+            if task.stop_reasons:
+                lines.append(
+                    f"| Stop reason | "
+                    f"{', '.join(task.stop_reasons)} |"
+                )
         lines.append("")
+
+        # --- Model invocation table ---
+        all_invocations = [
+            inv for task in result.tasks for inv in task.invocations
+        ]
+        if all_invocations:
+            lines.append("### Model invocations")
+            lines.append("")
+            lines.append(
+                "| Model | Latency | Input | Output | "
+                "Cache Create | Cache Read | Stop |"
+            )
+            lines.append("|---|---:|---:|---:|---:|---:|---|")
+            for inv in all_invocations:
+                lines.append(
+                    f"| {inv.model or '?'} | "
+                    f"{inv.latency_ms or '?'} ms | "
+                    f"{inv.input_tokens or 0:,} | "
+                    f"{inv.output_tokens or 0:,} | "
+                    f"{inv.cache_creation_input_tokens or 0:,} | "
+                    f"{inv.cache_read_input_tokens or 0:,} | "
+                    f"{inv.stop_reason or '?'} |"
+                )
+            lines.append("")
+
+        # --- Context composition table ---
+        all_components = [
+            comp for task in result.tasks
+            for comp in task.context_components
+        ]
+        if all_components:
+            lines.append("### Context composition")
+            lines.append("")
+            lines.append(
+                "| Kind | Name | Chars | Items | Cacheable |"
+            )
+            lines.append("|---|---|---:|---:|---|")
+            for comp in all_components:
+                lines.append(
+                    f"| {comp.kind} | {comp.name or '—'} | "
+                    f"{comp.char_count or '?'} | "
+                    f"{comp.item_count or '?'} | "
+                    f"{'✓' if comp.cacheable else '✗' if comp.cacheable is not None else '?'} |"
+                )
+            lines.append("")
+
+        # --- Normalization coverage ---
+        coverage_used = [
+            a for task in result.tasks
+            for a in task.coverage_artifacts_used
+        ]
+        coverage_unresolved = [
+            f for task in result.tasks
+            for f in task.coverage_unresolved_fields
+        ]
+        if coverage_used or coverage_unresolved:
+            lines.append("### Normalization coverage")
+            lines.append("")
+            if coverage_used:
+                lines.append(
+                    f"- Artifacts used: {len(coverage_used)}"
+                )
+            if coverage_unresolved:
+                lines.append("- Unresolved fields:")
+                for f in coverage_unresolved:
+                    lines.append(f"  - `{f}`")
+            lines.append("")
 
         # --- Tools, MCP, plugins, skills ---
         lines.append("## Tools, MCP plugins and skills")

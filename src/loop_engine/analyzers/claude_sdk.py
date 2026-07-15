@@ -17,11 +17,15 @@ Analyze one enterprise AI task run. Return the requested structured output.
 
 EVALUATE:
 - Context overhead: oversized or irrelevant system prompts, duplicated instructions.
-- Cache utilization: high cache_creation vs cache_read tokens.
+- Cache utilization: distinguish uncached input, cache creation, and cache read tokens.
 - Token efficiency: input/output ratio, unnecessary verbosity.
 - Tool selection: redundant calls, incorrect arguments, better alternatives.
 - Plugin/skill gaps: missing instructions, incomplete attribution.
 - Incomplete traces: pending tool calls, missing results.
+- Model invocations: intermediate tool_use vs terminal end_turn stops.
+- Context composition: measured context sources (system_prompt, skill_instructions,
+  tool_definitions, session_context, harness, messages). Context components may
+  overlap and must not be summed without disjoint evidence.
 
 FOR EACH FINDING:
 - Classify its epistemic_status:
@@ -63,9 +67,26 @@ def _build_analysis_bundle(
             "tool_names": task.tool_names,
             "input_tokens": task.input_tokens,
             "output_tokens": task.output_tokens,
+            "cache_creation_input_tokens": (
+                task.cache_creation_input_tokens
+            ),
+            "cache_read_input_tokens": (
+                task.cache_read_input_tokens
+            ),
             "latency_ms": task.latency_ms,
+            "http_statuses": task.http_statuses,
+            "stop_reasons": task.stop_reasons,
             "asset_exposures": [
-                exp.model_dump(mode="json") for exp in task.asset_exposures
+                exp.model_dump(mode="json")
+                for exp in task.asset_exposures
+            ],
+            "invocations": [
+                inv.model_dump(mode="json")
+                for inv in task.invocations
+            ],
+            "context_components": [
+                comp.model_dump(mode="json")
+                for comp in task.context_components
             ],
         },
         "events": [
@@ -93,10 +114,19 @@ def _build_analysis_bundle(
         "context_profile": {
             "total_input_tokens": task.input_tokens,
             "total_output_tokens": task.output_tokens,
+            "cache_creation_input_tokens": (
+                task.cache_creation_input_tokens
+            ),
+            "cache_read_input_tokens": (
+                task.cache_read_input_tokens
+            ),
             "latency_ms": task.latency_ms,
+            "http_statuses": task.http_statuses,
+            "stop_reasons": task.stop_reasons,
             "model_ids": task.model_ids,
             "tool_count": len(task.tool_names),
             "event_count": len(selected_events),
+            "invocation_count": len(task.invocations),
             "pending_tool_calls": [
                 event.tool_call_id
                 for event in selected_events

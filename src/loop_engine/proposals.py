@@ -55,7 +55,7 @@ def build_proposals(
                     title=rec.summary,
                     hypothesis=rec.rationale,
                     target_layer=rec.target_layer,
-                    evidence_signal_ids=rec.evidence_event_ids,
+                    evidence_event_ids=rec.evidence_event_ids,
                     recommended_experiment=(
                         rec.expected_benefit or
                         "Evaluate the recommendation in a controlled A/B test."
@@ -96,7 +96,7 @@ def build_proposals(
                 "beyond configured guardrails."
             ),
             target_layer=target_layer,
-            evidence_signal_ids=evidence,
+            evidence_event_ids=evidence,
             recommended_experiment=(
                 "Create a candidate asset version, hold model and other "
                 "assets constant, then run a session-level switchback and "

@@ -475,6 +475,14 @@ def finalize_candidates(
                 plugin_name=candidate.plugin_name,
                 attribution_skill=candidate.attribution_skill,
                 asset_markers=candidate.asset_markers,
+                cache_creation_input_tokens=(
+                    candidate.cache_creation_input_tokens
+                ),
+                cache_read_input_tokens=(
+                    candidate.cache_read_input_tokens
+                ),
+                http_status=candidate.http_status,
+                stop_reason=candidate.stop_reason,
                 raw_ref=(
                     f"{envelope.raw_ref}&block={candidate.block_index}"
                 ),

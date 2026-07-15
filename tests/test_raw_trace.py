@@ -140,6 +140,47 @@ def _make_bundle_response(
             },
         ],
         "pending_tool_calls": [],
+        "invocations": [
+            {
+                "invocation_id": "inv_01",
+                "model": "claude-sonnet-4-20250514",
+                "start_timestamp": "2026-07-14T17:24:53.744313Z",
+                "end_timestamp": None,
+                "latency_ms": 8212,
+                "http_status": 200,
+                "stop_reason": "tool_use",
+                "input_tokens": 14042,
+                "output_tokens": 409,
+                "cache_creation_input_tokens": 96651,
+                "cache_read_input_tokens": 0,
+                "thinking_tokens": None,
+                "tier": "sonnet",
+                "evidence": [
+                    _evidence(meta_id),
+                    _evidence(resp_id, "line 1, message_start"),
+                ],
+            }
+        ],
+        "context_components": [
+            {
+                "kind": "system_prompt",
+                "name": "DataHub metadata assistant",
+                "char_count": 2500,
+                "item_count": 1,
+                "cacheable": True,
+                "summary": "System prompt for DataHub metadata operations",
+                "evidence": [_evidence(req_id, "$.system")],
+            },
+            {
+                "kind": "tool_definitions",
+                "name": None,
+                "char_count": 1800,
+                "item_count": 2,
+                "cacheable": True,
+                "summary": "Two MCP DataHub tool definitions",
+                "evidence": [_evidence(req_id, "$.tools")],
+            },
+        ],
         "coverage": {
             "artifacts_used": [meta_id, req_id, resp_id, tool_id],
             "artifacts_skipped": [],
@@ -407,6 +448,7 @@ def test_validate_bundle_rejects_unknown_artifact_ids() -> None:
         },
         "messages": [], "tool_calls": [], "tool_results": [],
         "pending_tool_calls": [],
+        "invocations": [], "context_components": [],
         "coverage": {
             "artifacts_used": [], "artifacts_skipped": [],
             "unresolved_fields": [],
@@ -452,6 +494,7 @@ def test_validate_bundle_rejects_duplicate_tool_call_ids() -> None:
             },
         ],
         "tool_results": [], "pending_tool_calls": [],
+        "invocations": [], "context_components": [],
         "coverage": {
             "artifacts_used": ["art_1"], "artifacts_skipped": [],
             "unresolved_fields": [],
