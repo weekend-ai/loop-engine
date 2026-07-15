@@ -339,6 +339,8 @@ class OutcomeSignal(BaseModel):
 
 
 class SemanticSignalCandidate(BaseModel):
+    """Legacy signal candidate — kept for backward compatibility."""
+
     kind: str
     subtype: str | None = None
     polarity: Literal["positive", "negative", "neutral", "unknown"] = "unknown"
@@ -347,11 +349,62 @@ class SemanticSignalCandidate(BaseModel):
     evidence_quotes: list[str] = Field(default_factory=list)
 
 
+class SemanticFinding(BaseModel):
+    """Evidence-backed observation, inefficiency, or recommendation.
+
+    STRICT-MODE CONTRACT: every property is required (no defaults),
+    nullable where appropriate. Compatible with OpenAI strict schemas.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: str = Field(
+        description=(
+            "Type of finding: context_overhead, cache_utilization, "
+            "redundant_instructions, tool_selection, tool_failure, "
+            "plugin_gap, incomplete_trace, or custom."
+        )
+    )
+    summary: str
+    rationale: str
+    target_layer: Literal[
+        "context", "prompt", "plugin", "skill", "tool", "model"
+    ]
+    target_asset: str | None = Field(
+        description="Specific asset name when known (e.g. plugin name)."
+    )
+    expected_benefit: str | None
+    confidence: float = Field(ge=0, le=1)
+    evidence_event_ids: list[str]
+    evidence_quotes: list[str]
+    limitations: str | None = Field(
+        description="What evidence is missing or what could invalidate this."
+    )
+    epistemic_status: Literal[
+        "observed_fact", "evidence_backed_inference",
+        "tentative_recommendation", "unsupported_conclusion",
+    ]
+
+
 class TaskSemanticAnalysis(BaseModel):
+    """Expanded semantic analysis output.
+
+    STRICT-MODE CONTRACT: every property is required, no defaults,
+    additionalProperties: false. Compatible with OpenAI strict schemas.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     task_type: str
     intent: str
+    observations: list[SemanticFinding]
+    inefficiencies: list[SemanticFinding]
+    recommendations: list[SemanticFinding]
+    outcome_signals: list[SemanticFinding]
+    missing_evidence: list[str]
+    root_cause_hypotheses: list[str]
+    # Legacy compat — kept for deterministic signal bridge
     signals: list[SemanticSignalCandidate] = Field(default_factory=list)
-    root_cause_hypotheses: list[str] = Field(default_factory=list)
 
 
 class TaskRun(BaseModel):

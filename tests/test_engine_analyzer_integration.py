@@ -14,6 +14,12 @@ class _FakeSemanticAnalyzer:
         return TaskSemanticAnalysis(
             task_type="coding_debugging",
             intent="Fix the authentication test",
+            observations=[],
+            inefficiencies=[],
+            recommendations=[],
+            outcome_signals=[],
+            missing_evidence=[],
+            root_cause_hypotheses=["The active instruction did not preserve constraints."],
             signals=[
                 SemanticSignalCandidate(
                     kind="instruction_gap",
@@ -24,7 +30,6 @@ class _FakeSemanticAnalyzer:
                     evidence_quotes=["don't change the database schema"],
                 )
             ],
-            root_cause_hypotheses=["The active instruction did not preserve constraints."],
         )
 
 

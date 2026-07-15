@@ -101,7 +101,9 @@ class LoopEngine:
                     signals.append(signal)
                     task.outcome_signals.append(signal)
         metrics = compute_metrics(tasks, signals, group_by=self.config.metrics.group_by)
-        proposals = build_proposals(tasks, signals)
+        proposals = build_proposals(
+            tasks, signals, semantic_analyses=semantic_analyses,
+        )
         output_directory = self.output_directory
 
         result = RunResult(

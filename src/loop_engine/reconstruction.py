@@ -32,11 +32,14 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
         ordered = sorted(session_events, key=lambda event: (event.timestamp, event.event_id))
         user_events = [event for event in ordered if event.role == "user"]
         intent = user_events[0].content if user_events else None
+
+        # Asset markers
         markers: dict[tuple[str, str], list[str]] = defaultdict(list)
         for event in ordered:
             for marker in event.asset_markers:
                 markers[_parse_marker(marker)].append(event.event_id)
-        exposures = [
+
+        exposures: list[AssetExposure] = [
             AssetExposure(
                 asset_name=name,
                 version=version,
@@ -44,16 +47,60 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
             )
             for (name, version), evidence in sorted(markers.items())
         ]
+
+        # Propagate MCP server, plugin, and skill into AssetExposure
+        seen_assets: set[tuple[str, str]] = {
+            (e.asset_name, e.version) for e in exposures
+        }
+        for event in ordered:
+            if event.mcp_server:
+                key = (f"mcp:{event.mcp_server}", "invoked")
+                if key not in seen_assets:
+                    seen_assets.add(key)
+                    exposures.append(AssetExposure(
+                        asset_name=f"mcp:{event.mcp_server}",
+                        version="invoked",
+                        state="invoked",
+                        evidence_event_ids=[event.event_id],
+                    ))
+                else:
+                    for exp in exposures:
+                        if (
+                            exp.asset_name == f"mcp:{event.mcp_server}"
+                            and event.event_id not in exp.evidence_event_ids
+                        ):
+                            exp.evidence_event_ids.append(event.event_id)
+            if event.plugin_name:
+                key = (f"plugin:{event.plugin_name}", "present")
+                if key not in seen_assets:
+                    seen_assets.add(key)
+                    exposures.append(AssetExposure(
+                        asset_name=f"plugin:{event.plugin_name}",
+                        version="present",
+                        state="present",
+                        evidence_event_ids=[event.event_id],
+                    ))
+            if event.attribution_skill:
+                key = (f"skill:{event.attribution_skill}", "present")
+                if key not in seen_assets:
+                    seen_assets.add(key)
+                    exposures.append(AssetExposure(
+                        asset_name=f"skill:{event.attribution_skill}",
+                        version="present",
+                        state="present",
+                        evidence_event_ids=[event.event_id],
+                    ))
+
         cost_values = [event.cost_usd for event in ordered if event.cost_usd is not None]
         latency_values = [event.latency_ms for event in ordered if event.latency_ms is not None]
         input_totals: dict[str, int] = {}
         output_totals: dict[str, int] = {}
         for event in ordered:
-            key = event.message_id or event.event_id
+            msg_key = event.message_id or event.event_id
             if event.input_tokens is not None:
-                input_totals[key] = event.input_tokens
+                input_totals[msg_key] = event.input_tokens
             if event.output_tokens is not None:
-                output_totals[key] = event.output_tokens
+                output_totals[msg_key] = event.output_tokens
         tasks.append(
             TaskRun(
                 task_id=f"task:{session_id}",

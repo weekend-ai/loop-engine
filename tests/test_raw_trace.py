@@ -55,7 +55,7 @@ def _make_bundle_response(
         "timing": {
             "start_timestamp": "2026-07-14T17:24:53.744313Z",
             "end_timestamp": None,
-            "latency_ms": 4812,
+            "latency_ms": 8212,
             "evidence": [_evidence(meta_id, "$.duration_ms")],
         },
         "http": {
@@ -68,8 +68,8 @@ def _make_bundle_response(
             ],
         },
         "usage": {
-            "input_tokens": 1247,
-            "output_tokens": 342,
+            "input_tokens": 14042,
+            "output_tokens": 409,
             "cache_creation_input_tokens": None,
             "cache_read_input_tokens": None,
             "evidence": [
@@ -505,7 +505,7 @@ def test_produces_canonical_events() -> None:
         if e.input_tokens is not None and e.input_tokens > 0
     ]
     assert len(usage_events) == 1
-    assert usage_events[0].input_tokens == 1247
+    assert usage_events[0].input_tokens == 14042
 
     # Coverage
     assert source.coverage.total_artifacts == 4

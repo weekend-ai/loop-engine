@@ -4,7 +4,7 @@
   "method": "POST",
   "url": "https://api.anthropic.com/v1/messages",
   "http_status": 200,
-  "duration_ms": 4812,
+  "duration_ms": 8212,
   "model": "claude-sonnet-4-20250514",
   "request_id": "req_01ABC123def456"
 }
