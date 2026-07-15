@@ -180,6 +180,9 @@ def _make_full_bundle(
                 "cache_read_input_tokens": 0,
                 "thinking_tokens": None,
                 "tier": "sonnet",
+                "service_tier": None,
+                "cache_creation_input_tokens_5m": None,
+                "cache_creation_input_tokens_1h": None,
                 "evidence": [
                     _evidence(meta_id),
                     _evidence(resp_id, "line 1"),
@@ -279,7 +282,52 @@ def test_raw_trace_propagation_to_task_run() -> None:
     assert task.cache_creation_input_tokens == 96651
     assert task.latency_ms == 8212
     assert 200 in task.http_statuses
+    # stop_reasons should come from invocations, not just events
     assert "tool_use" in task.stop_reasons
+
+
+def test_stop_reasons_from_invocations_not_just_events() -> None:
+    """When invocations exist with different stop_reasons than the
+    usage-owning event, the task must show ALL invocation stop_reasons.
+
+    Regression for: task stop_reasons came only from canonical events,
+    missing second invocation's end_turn.
+    """
+    _, artifact_ids, _ = _get_source_and_ids()
+    response = _make_full_bundle(artifact_ids)
+    # Add a second invocation with end_turn stop_reason
+    resp_id = next(
+        aid for fname, aid in artifact_ids.items()
+        if "response" in fname
+    )
+    response["invocations"].append({
+        "invocation_id": "inv_02",
+        "model": "claude-sonnet-4-20250514",
+        "start_timestamp": "2026-07-14T17:25:02Z",
+        "end_timestamp": None,
+        "latency_ms": 3000,
+        "http_status": 200,
+        "stop_reason": "end_turn",
+        "input_tokens": 5000,
+        "output_tokens": 200,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 96651,
+        "cache_creation_input_tokens_5m": None,
+        "cache_creation_input_tokens_1h": None,
+        "thinking_tokens": None,
+        "tier": "sonnet",
+        "service_tier": None,
+        "evidence": [_evidence(resp_id)],
+    })
+    provider = _FakeProvider(response)
+    source = RawTraceSource("relay", str(FIXTURE_DIR), provider=provider)
+    events = list(source.iter_events())
+    tasks = reconstruct_tasks(events)
+
+    assert len(tasks) == 1
+    # Both stop_reasons must appear
+    assert "tool_use" in tasks[0].stop_reasons
+    assert "end_turn" in tasks[0].stop_reasons
 
 
 # ===========================================================================
@@ -365,6 +413,35 @@ def test_completeness_detects_dropped_final_response() -> None:
         "content_block_start" in iss.description
         for iss in review.issues
     ), "Issue should reference the content_block_start SSE event"
+
+
+def test_completeness_does_not_flag_valid_complete_trace() -> None:
+    """A valid complete trace with 1 text block, 2 tool_use blocks,
+    and 1 assistant message must NOT be falsely flagged.
+
+    Regression for: counting all content_block_start events (including
+    tool_use/thinking) as text blocks.
+    """
+    _, artifact_ids, bundle_artifacts = _get_source_and_ids()
+    # The fixture has 3 content_block_start (1 text + 2 tool_use).
+    # A complete bundle with 1 assistant message should be fine.
+    complete = _make_full_bundle(artifact_ids)
+    # 1 assistant message matches 1 text content_block_start
+    assert len(complete["messages"]) == 2  # user + assistant
+    assert sum(
+        1 for m in complete["messages"] if m["role"] == "assistant"
+    ) == 1
+
+    valid_ids = set(artifact_ids.values())
+    bundle_result = NormalizedTraceBundle.model_validate(complete)
+    manifest = _build_manifest(bundle_artifacts)
+    review = _review_completeness(bundle_result, manifest, valid_ids)
+
+    assert review.complete, (
+        f"Valid complete trace should pass review but got "
+        f"{len(review.issues)} issues: "
+        + "; ".join(i.description for i in review.issues)
+    )
 
 
 # ===========================================================================
@@ -455,8 +532,11 @@ def test_analyzer_payload_includes_new_fields() -> None:
                 output_tokens=409,
                 cache_creation_input_tokens=96651,
                 cache_read_input_tokens=0,
+                cache_creation_input_tokens_5m=None,
+                cache_creation_input_tokens_1h=None,
                 thinking_tokens=None,
                 tier="sonnet",
+                service_tier=None,
                 evidence=[],
             )
         ],

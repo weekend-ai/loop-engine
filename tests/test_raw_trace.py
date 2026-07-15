@@ -155,6 +155,9 @@ def _make_bundle_response(
                 "cache_read_input_tokens": 0,
                 "thinking_tokens": None,
                 "tier": "sonnet",
+                "service_tier": None,
+                "cache_creation_input_tokens_5m": None,
+                "cache_creation_input_tokens_1h": None,
                 "evidence": [
                     _evidence(meta_id),
                     _evidence(resp_id, "line 1, message_start"),

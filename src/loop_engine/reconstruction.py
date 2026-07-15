@@ -182,11 +182,11 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
                     event.cache_read_input_tokens
                 )
 
-        # HTTP statuses and stop reasons
+        # HTTP statuses and stop reasons from events
         http_statuses = sorted({
             e.http_status for e in ordered if e.http_status is not None
         })
-        stop_reasons = sorted({
+        stop_reasons_from_events = sorted({
             e.stop_reason for e in ordered if e.stop_reason is not None
         })
 
@@ -201,11 +201,15 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
         all_invocations: list[Any] = []
         all_components: list[Any] = []
         all_coverage_used: list[str] = []
+        all_coverage_skipped: list[str] = []
         all_coverage_unresolved: list[str] = []
         for event in ordered:
             all_invocations.extend(event.invocations)
             all_components.extend(event.context_components)
             all_coverage_used.extend(event.coverage_artifacts_used)
+            all_coverage_skipped.extend(
+                event.coverage_artifacts_skipped
+            )
             all_coverage_unresolved.extend(
                 event.coverage_unresolved_fields
             )
@@ -241,6 +245,19 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
             final_cache_create = inv_cache_create
             final_cache_read = inv_cache_read
             final_latency = inv_latency or None
+            # Derive HTTP/stop from invocations
+            inv_http: list[int] = sorted(
+                int(inv["http_status"])
+                for inv in deduped_invocations
+                if inv.get("http_status") is not None
+            )
+            inv_stop: list[str] = sorted(
+                str(inv["stop_reason"])
+                for inv in deduped_invocations
+                if inv.get("stop_reason") is not None
+            )
+            final_http = inv_http if inv_http else http_statuses
+            final_stop = inv_stop if inv_stop else stop_reasons_from_events
         else:
             final_input = sum(input_totals.values())
             final_output = sum(output_totals.values())
@@ -251,6 +268,8 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
             final_latency = (
                 sum(latency_values) if latency_values else None
             )
+            final_http = http_statuses
+            final_stop = stop_reasons_from_events
 
         tasks.append(
             TaskRun(
@@ -276,8 +295,8 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
                 latency_ms=final_latency,
                 cache_creation_input_tokens=final_cache_create,
                 cache_read_input_tokens=final_cache_read,
-                http_statuses=http_statuses,
-                stop_reasons=stop_reasons,
+                http_statuses=final_http,
+                stop_reasons=final_stop,
                 invocations=[
                     OperationalInvocation.model_validate(inv)
                     for inv in deduped_invocations
@@ -289,9 +308,16 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
                 coverage_artifacts_used=sorted(set(
                     all_coverage_used
                 )),
+                coverage_artifacts_skipped=sorted(set(
+                    all_coverage_skipped
+                )),
                 coverage_unresolved_fields=sorted(set(
                     all_coverage_unresolved
                 )),
+                total_artifact_count=(
+                    len(set(all_coverage_used))
+                    + len(set(all_coverage_skipped))
+                ),
             )
         )
     return tasks

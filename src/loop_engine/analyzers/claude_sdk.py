@@ -117,6 +117,14 @@ def _build_analysis_bundle(
                 "plugin_name": event.plugin_name,
                 "attribution_skill": event.attribution_skill,
                 "paired_event_id": event.paired_event_id,
+                "invocation_ids": [
+                    inv.get("invocation_id", "")
+                    for inv in event.invocations
+                ],
+                "context_component_kinds": [
+                    comp.get("kind", "")
+                    for comp in event.context_components
+                ],
             }
             for event in selected_events
         ],

@@ -324,9 +324,14 @@ class OperationalInvocation(BaseModel):
     output_tokens: int | None
     cache_creation_input_tokens: int | None
     cache_read_input_tokens: int | None
+    cache_creation_input_tokens_5m: int | None
+    cache_creation_input_tokens_1h: int | None
     thinking_tokens: int | None
     tier: str | None = Field(
         description="Model tier: e.g. 'sonnet', 'haiku', 'opus'."
+    )
+    service_tier: str | None = Field(
+        description="API service tier if reported."
     )
     evidence: list[EvidenceRef]
 
@@ -512,7 +517,9 @@ class TaskRun(BaseModel):
     invocations: list[OperationalInvocation] = Field(default_factory=list)
     context_components: list[ContextComponent] = Field(default_factory=list)
     coverage_artifacts_used: list[str] = Field(default_factory=list)
+    coverage_artifacts_skipped: list[str] = Field(default_factory=list)
     coverage_unresolved_fields: list[str] = Field(default_factory=list)
+    total_artifact_count: int = 0
     outcome_signals: list[OutcomeSignal] = Field(default_factory=list)
     reconstruction_method: str = "source_session_hint"
     reconstruction_confidence: float = Field(default=1.0, ge=0, le=1)

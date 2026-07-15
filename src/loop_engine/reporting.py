@@ -201,16 +201,31 @@ def write_outputs(
             a for task in result.tasks
             for a in task.coverage_artifacts_used
         ]
+        coverage_skipped = [
+            a for task in result.tasks
+            for a in task.coverage_artifacts_skipped
+        ]
         coverage_unresolved = [
             f for task in result.tasks
             for f in task.coverage_unresolved_fields
         ]
-        if coverage_used or coverage_unresolved:
+        total_artifacts = sum(
+            task.total_artifact_count for task in result.tasks
+        )
+        if coverage_used or coverage_skipped or coverage_unresolved:
             lines.append("### Normalization coverage")
             lines.append("")
+            if total_artifacts:
+                lines.append(
+                    f"- Total artifacts: {total_artifacts}"
+                )
             if coverage_used:
                 lines.append(
                     f"- Artifacts used: {len(coverage_used)}"
+                )
+            if coverage_skipped:
+                lines.append(
+                    f"- Artifacts skipped: {len(coverage_skipped)}"
                 )
             if coverage_unresolved:
                 lines.append("- Unresolved fields:")

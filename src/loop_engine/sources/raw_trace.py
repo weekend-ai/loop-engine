@@ -114,6 +114,11 @@ RULES:
   which fields you could not map.
 - Do not invent data absent from the artifacts.
 - Serialize nested objects as JSON strings where the schema requires str.
+- Do NOT report transport/configuration noise as unresolved: headers
+  (Content-Type, Accept, x-stainless-*, anthropic-version, etc.),
+  HTTP method/url, request metadata (capture_id, method, url), or
+  streaming framing (event, data, index fields in SSE) are expected
+  and should be silently ignored.
 """
 
 
@@ -362,16 +367,27 @@ def _frame_artifact(artifact: RawArtifactEnvelope) -> list[dict[str, str]]:
             line = line.strip()
             if line:
                 event_type = "unknown"
+                sub_type = ""
                 try:
                     parsed = json.loads(line)
                     event_type = parsed.get("type", "unknown")
+                    # For content_block_start, capture the block type
+                    # (text vs tool_use vs thinking) to distinguish them
+                    if event_type == "content_block_start":
+                        sub_type = (
+                            parsed.get("content_block", {})
+                            .get("type", "unknown")
+                        )
                 except json.JSONDecodeError:
                     event_type = "unparseable"
-                records.append({
+                rec: dict[str, str] = {
                     "record_id": f"{artifact.artifact_id}:line:{i}",
                     "artifact_id": artifact.artifact_id,
                     "event_type": event_type,
-                })
+                }
+                if sub_type:
+                    rec["sub_type"] = sub_type
+                records.append(rec)
     elif artifact.media_type == "application/json":
         try:
             parsed = json.loads(content)
@@ -467,57 +483,52 @@ def _review_completeness(
 ) -> CompletenessReview:
     """Compare source manifest with normalized inventory.
 
-    Detection works from parsed SSE event types in the manifest, not
-    from free-text description matching.
+    Reviews ALL artifacts in the manifest, not just those marked 'used',
+    so a skipped or omitted artifact cannot evade review.
+
+    Counts only text-type content_block_start events as assistant
+    messages — tool_use and thinking blocks are not messages.
     """
     issues: list[CompletenessIssue] = []
 
-    covered_artifacts: set[str] = set(
-        bundle_result.coverage.artifacts_used
-    )
-
-    # Build a set of SSE event types present in covered NDJSON artifacts
+    # Index SSE event types from ALL manifest records (not just covered)
     sse_types: dict[str, list[dict[str, str]]] = {}
     for rec in manifest:
-        if rec["artifact_id"] in covered_artifacts:
-            et = rec["event_type"]
-            sse_types.setdefault(et, []).append(rec)
+        et = rec["event_type"]
+        sse_types.setdefault(et, []).append(rec)
 
-    # Normalized inventory: what's in the bundle
+    # Count only TEXT content_block_start events — tool_use and
+    # thinking blocks are not assistant messages
+    text_blocks = [
+        rec for rec in sse_types.get("content_block_start", [])
+        if rec.get("sub_type") == "text"
+    ]
+    text_blocks_in_source = len(text_blocks)
+
     normalized_roles = [m.role for m in bundle_result.messages]
     has_tool_results = len(bundle_result.tool_results) > 0
-
-    # --- Check 1: content_block_start (text) in source but no
-    # corresponding assistant message after tool results ---
-    # A content_block_start with index > the tool-call blocks means
-    # a final assistant response exists in the stream.
-    text_blocks_in_source = len(
-        sse_types.get("content_block_start", [])
-    )
     assistant_msgs_in_bundle = sum(
         1 for r in normalized_roles if r == "assistant"
     )
 
-    # If source has text content blocks AND tool results, but the
-    # bundle has fewer assistant messages than text blocks, something
-    # was dropped.
+    # Check 1: text content blocks in source exceed assistant messages
     if (has_tool_results
             and text_blocks_in_source > 0
             and assistant_msgs_in_bundle < text_blocks_in_source):
-        # Find which content_block_start records are unmatched
-        for rec in sse_types.get("content_block_start", []):
+        for rec in text_blocks:
             issues.append(CompletenessIssue(
                 record_id=rec["record_id"],
                 artifact_id=rec["artifact_id"],
                 field="messages",
                 description=(
-                    "Source SSE stream contains a content_block_start "
-                    "event not reflected in normalized messages. "
-                    "A final assistant response may have been dropped."
+                    "Source SSE stream contains a text "
+                    "content_block_start event not reflected in "
+                    "normalized messages. A final assistant response "
+                    "may have been dropped."
                 ),
             ))
 
-    # --- Check 2: message_stop without corresponding message ---
+    # Check 2: message_stop without any messages
     if "message_stop" in sse_types and not normalized_roles:
         for rec in sse_types["message_stop"]:
             issues.append(CompletenessIssue(
@@ -530,12 +541,29 @@ def _review_completeness(
                 ),
             ))
 
+    # Check 3: artifacts in manifest but not covered by normalization
+    manifest_artifact_ids = {rec["artifact_id"] for rec in manifest}
+    covered = set(bundle_result.coverage.artifacts_used)
+    skipped = set(bundle_result.coverage.artifacts_skipped)
+    acknowledged = covered | skipped
+    for aid in manifest_artifact_ids:
+        if aid in valid_artifact_ids and aid not in acknowledged:
+            issues.append(CompletenessIssue(
+                record_id=f"{aid}:omitted",
+                artifact_id=aid,
+                field="coverage",
+                description=(
+                    f"Artifact {aid[:12]}... present in source but "
+                    "neither used nor explicitly skipped by "
+                    "normalization."
+                ),
+            ))
+
     # Validate: reject issues citing unknown artifact IDs
     validated_issues = []
     for issue in issues:
         if issue.artifact_id not in valid_artifact_ids:
             continue
-        # record_id must start with a valid artifact_id prefix
         rec_prefix = issue.record_id.split(":")[0]
         if rec_prefix not in valid_artifact_ids:
             continue
@@ -1029,6 +1057,10 @@ class RawTraceSource:
                         repaired, manifest, valid_ids,
                     )
                     if review2.complete:
+                        # Re-measure repaired result locally
+                        _remeasure_context_components(
+                            repaired, bundle,
+                        )
                         result = repaired
                     else:
                         raise RuntimeError(
