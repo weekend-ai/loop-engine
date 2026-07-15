@@ -107,6 +107,10 @@ RULES:
 - Extract model invocations: each API call (including intermediate tool_use
   and terminal end_turn) as a separate OperationalInvocation with model,
   timestamps, latency, HTTP status, stop_reason, token/cache/thinking usage.
+  Every invocation MUST extract start and end timestamps from chronological
+  tool-result and assistant records when observable. Extract latency from
+  every invocation, not just the first. Missing timing on an invocation that
+  has usage/stop evidence is an extraction error — do not silently omit it.
 - Extract context components: identify non-conversation context sections
   (system_prompt, skill_instructions, tool_definitions, session_context,
   harness, messages) with character/item counts and cacheability.
@@ -433,17 +437,82 @@ def _build_manifest(
 
 
 def _resolve_json_path(content: str, path: str) -> Any | None:
-    """Resolve a simple JSON path like $.tools or $.messages from content."""
-    if not path.startswith("$."):
+    """Resolve a JSON path from content.
+
+    Supports the restricted path grammar:
+      - Root: $
+      - Dotted keys: $.key, $.key1.key2
+      - Numeric indexes: $.key[0], $.arr[0].nested[1]
+
+    Returns None if any segment fails (wrong type, out of bounds,
+    or trailing prose after the path). Never falls back to a parent
+    container.
+    """
+    if not path.startswith("$"):
         return None
-    key = path[2:].split("[")[0]  # $.tools → tools
+
     try:
         parsed = json.loads(content)
-        if isinstance(parsed, dict) and key in parsed:
-            return parsed[key]
     except (json.JSONDecodeError, TypeError):
-        pass
-    return None
+        return None
+
+    # Strip the root "$" and optional leading "."
+    rest = path[1:]
+    if rest.startswith("."):
+        rest = rest[1:]
+    elif rest:
+        # "$" followed by something other than "." is invalid
+        return None
+
+    if not rest:
+        return parsed
+
+    current: Any = parsed
+    i = 0
+    while i < len(rest):
+        if rest[i] == "[":
+            # Numeric index
+            end = rest.find("]", i)
+            if end == -1:
+                return None
+            idx_str = rest[i + 1:end]
+            try:
+                idx = int(idx_str)
+            except ValueError:
+                return None
+            if not isinstance(current, list):
+                return None
+            if idx < 0 or idx >= len(current):
+                return None
+            current = current[idx]
+            i = end + 1
+            # Consume optional "." after "]"
+            if i < len(rest) and rest[i] == ".":
+                i += 1
+            elif i < len(rest) and rest[i] != "[":
+                # Trailing prose after "]" without "." or "["
+                return None
+        else:
+            # Dotted key — find next "." or "[" or end
+            end = len(rest)
+            for j in range(i, len(rest)):
+                if rest[j] in (".", "["):
+                    end = j
+                    break
+            key = rest[i:end]
+            if not key:
+                return None
+            if not isinstance(current, dict):
+                return None
+            if key not in current:
+                return None
+            current = current[key]
+            i = end
+            # Consume the "." separator
+            if i < len(rest) and rest[i] == ".":
+                i += 1
+
+    return current
 
 
 def _remeasure_context_components(
@@ -469,10 +538,22 @@ def _remeasure_context_components(
             if resolved is None:
                 continue
             # Re-measure from the resolved value
-            serialized = json.dumps(resolved, ensure_ascii=False)
-            comp.char_count = len(serialized)
-            if isinstance(resolved, (list, dict)):
+            if isinstance(resolved, str):
+                comp.char_count = len(resolved)
+                comp.item_count = 1
+            elif isinstance(resolved, (list, dict)):
+                serialized = json.dumps(
+                    resolved, ensure_ascii=False,
+                )
+                comp.char_count = len(serialized)
                 comp.item_count = len(resolved)
+            else:
+                # Scalar — serialize
+                serialized = json.dumps(
+                    resolved, ensure_ascii=False,
+                )
+                comp.char_count = len(serialized)
+                comp.item_count = 1
             break  # First resolvable ref wins
 
 

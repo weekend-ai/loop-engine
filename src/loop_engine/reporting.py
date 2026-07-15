@@ -159,18 +159,27 @@ def write_outputs(
             lines.append("### Model invocations")
             lines.append("")
             lines.append(
-                "| Model | Latency | Input | Output | "
-                "Cache Create | Cache Read | Stop |"
+                "| ID | Model | Latency | Input | Output | "
+                "Cache Create | Cache Read | "
+                "5m Create | 1h Create | Thinking | "
+                "Service Tier | Stop |"
             )
-            lines.append("|---|---:|---:|---:|---:|---:|---|")
+            lines.append(
+                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"
+            )
             for inv in all_invocations:
                 lines.append(
-                    f"| {inv.model or '?'} | "
+                    f"| {inv.invocation_id[:8]} | "
+                    f"{inv.model or '?'} | "
                     f"{inv.latency_ms or '?'} ms | "
                     f"{inv.input_tokens or 0:,} | "
                     f"{inv.output_tokens or 0:,} | "
                     f"{inv.cache_creation_input_tokens or 0:,} | "
                     f"{inv.cache_read_input_tokens or 0:,} | "
+                    f"{inv.cache_creation_input_tokens_5m or '-'} | "
+                    f"{inv.cache_creation_input_tokens_1h or '-'} | "
+                    f"{inv.thinking_tokens or '-'} | "
+                    f"{inv.service_tier or '-'} | "
                     f"{inv.stop_reason or '?'} |"
                 )
             lines.append("")
@@ -182,6 +191,11 @@ def write_outputs(
         ]
         if all_components:
             lines.append("### Context composition")
+            lines.append("")
+            lines.append(
+                "> **Note**: Context components may overlap and must "
+                "not be summed without disjoint evidence."
+            )
             lines.append("")
             lines.append(
                 "| Kind | Name | Chars | Items | Cacheable |"

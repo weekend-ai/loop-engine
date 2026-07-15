@@ -59,11 +59,14 @@ class ContextComponent(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: str = Field(
-        description=(
-            "Type: system_prompt, skill_instructions, tool_definitions, "
-            "session_context, harness, messages, or custom."
-        )
+    component_id: str | None = Field(
+        description="Stable identifier for deduplication.",
+    )
+    kind: Literal[
+        "system_prompt", "skill_instructions", "tool_definitions",
+        "session_context", "harness", "messages", "custom",
+    ] = Field(
+        description="Constrained component type."
     )
     name: str | None
     char_count: int | None

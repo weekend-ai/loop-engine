@@ -166,6 +166,7 @@ def _make_bundle_response(
         ],
         "context_components": [
             {
+                "component_id": "comp_sys",
                 "kind": "system_prompt",
                 "name": "DataHub metadata assistant",
                 "char_count": 2500,
@@ -175,6 +176,7 @@ def _make_bundle_response(
                 "evidence": [_evidence(req_id, "$.system")],
             },
             {
+                "component_id": "comp_tools",
                 "kind": "tool_definitions",
                 "name": None,
                 "char_count": 1800,

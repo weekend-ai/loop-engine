@@ -191,6 +191,7 @@ def _make_full_bundle(
         ],
         "context_components": [
             {
+                "component_id": "comp_sys",
                 "kind": "system_prompt",
                 "name": "DataHub metadata assistant",
                 "char_count": 2500,
@@ -200,6 +201,7 @@ def _make_full_bundle(
                 "evidence": [_evidence(req_id, "$.system")],
             },
             {
+                "component_id": "comp_tools",
                 "kind": "tool_definitions",
                 "name": None,
                 "char_count": 1800,
@@ -542,6 +544,7 @@ def test_analyzer_payload_includes_new_fields() -> None:
         ],
         context_components=[
             ContextComponent(
+                component_id=None,
                 kind="system_prompt",
                 name="test",
                 char_count=1000,

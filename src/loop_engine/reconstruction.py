@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from datetime import datetime
 from typing import Literal
 
 from loop_engine.models import (
@@ -124,13 +125,45 @@ def _dedup_invocations(
 def _dedup_components(
     components: list[ContextComponent],
 ) -> list[ContextComponent]:
-    """Deduplicate context components by (kind, name)."""
-    seen: dict[tuple[str, str | None], ContextComponent] = {}
+    """Deduplicate by component_id (preferred) or (kind, name)."""
+    seen_ids: set[str] = set()
+    seen_keys: set[tuple[str, str | None]] = set()
+    result: list[ContextComponent] = []
     for comp in components:
-        key = (comp.kind, comp.name)
-        if key not in seen:
-            seen[key] = comp
-    return list(seen.values())
+        if comp.component_id is not None:
+            if comp.component_id in seen_ids:
+                continue
+            seen_ids.add(comp.component_id)
+        else:
+            key = (comp.kind, comp.name)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+        result.append(comp)
+    return result
+
+
+def _derive_used_from_evidence(
+    invocations: list[OperationalInvocation],
+    components: list[ContextComponent],
+    events: list[CanonicalEvent],
+) -> set[str]:
+    """Derive 'used' artifact IDs from all evidence references.
+
+    Any artifact cited by an accepted normalized fact is 'used'.
+    """
+    used: set[str] = set()
+    for inv in invocations:
+        for ref in inv.evidence:
+            used.add(ref.artifact_id)
+    for comp in components:
+        for ref in comp.evidence:
+            used.add(ref.artifact_id)
+    # Also check event-level coverage
+    for event in events:
+        for aid in event.coverage_artifacts_used:
+            used.add(aid)
+    return used
 
 
 def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
@@ -216,6 +249,28 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
 
         # Deduplicate invocations by invocation_id
         deduped_invocations = _dedup_invocations(all_invocations)
+
+        # Deterministic latency fallback: when both timestamps exist
+        # but latency is missing, compute from parsed timestamps
+        for inv in deduped_invocations:
+            if (inv.latency_ms is None
+                    and inv.start_timestamp is not None
+                    and inv.end_timestamp is not None):
+                try:
+                    start = datetime.fromisoformat(
+                        inv.start_timestamp.replace("Z", "+00:00")
+                    )
+                    end = datetime.fromisoformat(
+                        inv.end_timestamp.replace("Z", "+00:00")
+                    )
+                    delta_ms = int(
+                        (end - start).total_seconds() * 1000
+                    )
+                    if delta_ms >= 0:
+                        inv.latency_ms = delta_ms
+                except (ValueError, TypeError):
+                    pass
+
         deduped_components = _dedup_components(all_components)
 
         # When invocations exist, derive totals from them
@@ -236,15 +291,18 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
                 inv.cache_read_input_tokens or 0
                 for inv in deduped_invocations
             )
-            inv_latency = sum(
-                inv.latency_ms or 0
+            known_latencies = [
+                inv.latency_ms
                 for inv in deduped_invocations
-            )
+                if inv.latency_ms is not None
+            ]
             final_input = inv_input
             final_output = inv_output
             final_cache_create = inv_cache_create
             final_cache_read = inv_cache_read
-            final_latency = inv_latency or None
+            final_latency = (
+                sum(known_latencies) if known_latencies else None
+            )
             # Derive HTTP/stop from invocations
             inv_http: list[int] = sorted(set(
                 inv.http_status
@@ -270,6 +328,19 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
             )
             final_http = http_statuses
             final_stop = stop_reasons_from_events
+
+        # Coverage: derive 'used' from evidence, ensure disjoint
+        evidence_used = _derive_used_from_evidence(
+            deduped_invocations, deduped_components, ordered,
+        )
+        self_reported_used = set(all_coverage_used)
+        final_used = sorted(evidence_used | self_reported_used)
+        final_skipped = sorted(
+            set(all_coverage_skipped) - evidence_used
+        )
+        final_total = len(
+            set(final_used) | set(final_skipped)
+        )
 
         tasks.append(
             TaskRun(
@@ -299,19 +370,12 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
                 stop_reasons=final_stop,
                 invocations=deduped_invocations,
                 context_components=deduped_components,
-                coverage_artifacts_used=sorted(set(
-                    all_coverage_used
-                )),
-                coverage_artifacts_skipped=sorted(set(
-                    all_coverage_skipped
-                )),
+                coverage_artifacts_used=final_used,
+                coverage_artifacts_skipped=final_skipped,
                 coverage_unresolved_fields=sorted(set(
                     all_coverage_unresolved
                 )),
-                total_artifact_count=(
-                    len(set(all_coverage_used))
-                    + len(set(all_coverage_skipped))
-                ),
+                total_artifact_count=final_total,
             )
         )
     return tasks
