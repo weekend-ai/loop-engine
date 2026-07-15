@@ -41,7 +41,7 @@ def test_claude_provider_requires_explicit_external_egress_opt_in(
         "    type: claude_code_jsonl\n"
         "    path: ./logs/*.jsonl\n"
         "analysis:\n"
-        "  provider: claude_cli\n"
+        "  provider: claude_sdk\n"
     )
 
     with pytest.raises(ValidationError, match="external_data_egress_allowed"):

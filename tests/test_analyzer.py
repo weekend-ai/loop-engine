@@ -1,50 +1,37 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from loop_engine.analyzers.claude_cli import ClaudeCliAnalyzer
+from loop_engine.analyzers.claude_sdk import ClaudeSdkAnalyzer
 from loop_engine.models import AssetExposure, CanonicalEvent, TaskRun, TaskSemanticAnalysis
 
 
-def test_claude_cli_analyzer_uses_schema_and_preserves_evidence() -> None:
-    captured: dict[str, object] = {}
+class FakeMessages:
+    def __init__(self, response: dict[str, Any] | Exception) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
 
-    def fake_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured["command"] = command
-        captured["input"] = kwargs["input"]
-        captured["timeout"] = kwargs["timeout"]
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps(
-                {
-                    "type": "result",
-                    "subtype": "success",
-                    "structured_output": {
-                        "task_type": "coding_debugging",
-                        "intent": "Fix authentication test",
-                        "signals": [
-                            {
-                                "kind": "human_correction",
-                                "subtype": "constraint_reminder",
-                                "polarity": "negative",
-                                "confidence": 0.93,
-                                "evidence_event_ids": ["e2"],
-                                "evidence_quotes": ["Do not change the schema"],
-                            }
-                        ],
-                        "root_cause_hypotheses": ["The active skill ignored a user constraint."],
-                    },
-                }
-            ),
-            stderr="",
+    def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=json.dumps(self.response))]
         )
 
+
+class FakeClient:
+    def __init__(self, response: dict[str, Any] | Exception) -> None:
+        self.messages = FakeMessages(response)
+
+
+def _task_and_events() -> tuple[TaskRun, list[CanonicalEvent]]:
     task = TaskRun(
         task_id="t1",
         session_id="s1",
@@ -65,7 +52,7 @@ def test_claude_cli_analyzer_uses_schema_and_preserves_evidence() -> None:
         CanonicalEvent(
             event_id="e1",
             source_id="fixture",
-            timestamp=datetime(2026, 7, 13, tzinfo=UTC),
+            timestamp=task.started_at,
             event_type="message",
             session_hint="s1",
             role="user",
@@ -86,69 +73,81 @@ def test_claude_cli_analyzer_uses_schema_and_preserves_evidence() -> None:
             raw_ref="fixture:e2",
         ),
     ]
+    return task, events
 
-    analysis = ClaudeCliAnalyzer(
-        model="sonnet", timeout_seconds=17, runner=fake_runner
-    ).analyze(task, events)
 
-    command = captured["command"]
-    assert isinstance(command, list)
+def _analysis_response() -> dict[str, Any]:
+    return {
+        "task_type": "coding_debugging",
+        "intent": "Fix authentication test",
+        "signals": [
+            {
+                "kind": "human_correction",
+                "subtype": "constraint_reminder",
+                "polarity": "negative",
+                "confidence": 0.93,
+                "evidence_event_ids": ["e2"],
+                "evidence_quotes": ["Do not change the schema"],
+            }
+        ],
+        "root_cause_hypotheses": ["The active skill ignored a user constraint."],
+    }
+
+
+def test_claude_sdk_analyzer_uses_schema_and_preserves_evidence() -> None:
+    client = FakeClient(_analysis_response())
+    task, events = _task_and_events()
+
+    analysis = ClaudeSdkAnalyzer(model="litellm-claude", client=client).analyze(task, events)
+
     assert analysis.task_type == "coding_debugging"
     assert analysis.signals[0].evidence_event_ids == ["e2"]
-    assert "--json-schema" in command
-    assert "--bare" in command
-    assert "--system-prompt" in command
-    assert "--max-turns" not in command
-    assert command[command.index("--system-prompt") + 1]
-    assert captured["timeout"] == 17
-    serialized_input = str(captured["input"])
+    call = client.messages.calls[0]
+    assert call["model"] == "litellm-claude"
+    assert call["output_config"]["format"]["type"] == "json_schema"
+    serialized_input = call["messages"][0]["content"]
     assert "evidence_event_ids" in serialized_input
-    assert "super-secret-value" not in serialized_input
-    assert "MODELSECRET" not in serialized_input
-    assert "TOOLSECRET" not in serialized_input
-    assert "ASSETSECRET" not in serialized_input
-    assert "VERSIONSECRET" not in serialized_input
-    assert "JSONSECRET" not in serialized_input
+    for secret in (
+        "super-secret-value",
+        "MODELSECRET",
+        "TOOLSECRET",
+        "ASSETSECRET",
+        "VERSIONSECRET",
+        "JSONSECRET",
+    ):
+        assert secret not in serialized_input
     assert "[REDACTED]" in serialized_input
     assert "tool_result" not in serialized_input
 
 
-def test_claude_cli_analyzer_surfaces_json_api_error() -> None:
-    def failed_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        return subprocess.CompletedProcess(
-            command,
-            1,
-            stdout=json.dumps(
-                {
-                    "type": "result",
-                    "is_error": True,
-                    "result": "API Error: credentials unavailable",
-                }
-            ),
-            stderr="",
-        )
+def test_claude_sdk_analyzer_can_disable_redaction() -> None:
+    client = FakeClient(_analysis_response())
+    task, events = _task_and_events()
 
-    task = TaskRun(
-        task_id="t1",
-        session_id="s1",
-        event_ids=["e1"],
-        intent="Fix the test",
-        started_at=datetime(2026, 7, 13, tzinfo=UTC),
-    )
-    event = CanonicalEvent(
-        event_id="e1",
-        source_id="fixture",
-        timestamp=datetime(2026, 7, 13, tzinfo=UTC),
-        event_type="message",
-        session_hint="s1",
-        role="user",
-        content="Fix the test",
-        raw_ref="fixture:e1",
-    )
+    ClaudeSdkAnalyzer(
+        client=client,
+        redact_before_egress=False,
+    ).analyze(task, events)
+
+    serialized_input = client.messages.calls[0]["messages"][0]["content"]
+    assert "super-secret-value" in serialized_input
+    assert "MODELSECRET" in serialized_input
+
+
+def test_claude_sdk_analyzer_surfaces_sdk_error() -> None:
+    client = FakeClient(RuntimeError("credentials unavailable"))
+    task, events = _task_and_events()
 
     with pytest.raises(RuntimeError, match="credentials unavailable"):
-        ClaudeCliAnalyzer(runner=failed_runner).analyze(task, [event])
+        ClaudeSdkAnalyzer(client=client).analyze(task, events)
+
+
+def test_claude_sdk_timeout_is_reported() -> None:
+    client = FakeClient(TimeoutError("timed out"))
+    task, events = _task_and_events()
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        ClaudeSdkAnalyzer(client=client).analyze(task, events)
 
 
 def test_semantic_signal_requires_evidence_event_id() -> None:
@@ -170,55 +169,11 @@ def test_semantic_signal_requires_evidence_event_id() -> None:
         )
 
 
-def test_claude_cli_timeout_is_reported() -> None:
-    def timeout_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        raise subprocess.TimeoutExpired(command, 5)
-
-    task = TaskRun(
-        task_id="t1",
-        session_id="s1",
-        event_ids=["e1"],
-        started_at=datetime(2026, 7, 13, tzinfo=UTC),
-    )
-    event = CanonicalEvent(
-        event_id="e1",
-        source_id="fixture",
-        timestamp=task.started_at,
-        event_type="message",
-        role="user",
-        content="Fix test",
-        raw_ref="fixture:e1",
-    )
-
-    with pytest.raises(RuntimeError, match="timed out"):
-        ClaudeCliAnalyzer(timeout_seconds=5, runner=timeout_runner).analyze(task, [event])
-
-
-def test_claude_cli_rejects_oversized_bundle_before_subprocess() -> None:
-    def unexpected_runner(
-        command: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        del command, kwargs
-        raise AssertionError("runner should not be called")
-
-    task = TaskRun(
-        task_id="t1",
-        session_id="s1",
-        event_ids=["e1"],
-        started_at=datetime(2026, 7, 13, tzinfo=UTC),
-    )
-    event = CanonicalEvent(
-        event_id="e1",
-        source_id="fixture",
-        timestamp=task.started_at,
-        event_type="message",
-        role="user",
-        content="x" * 1000,
-        raw_ref="fixture:e1",
-    )
+def test_claude_sdk_rejects_oversized_bundle_before_request() -> None:
+    client = FakeClient(_analysis_response())
+    task, events = _task_and_events()
+    events[0].content = "x" * 1000
 
     with pytest.raises(RuntimeError, match="exceeds configured limit"):
-        ClaudeCliAnalyzer(max_input_chars=100, runner=unexpected_runner).analyze(
-            task, [event]
-        )
+        ClaudeSdkAnalyzer(max_input_chars=100, client=client).analyze(task, events)
+    assert client.messages.calls == []

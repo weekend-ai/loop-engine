@@ -17,7 +17,7 @@ class SourceConfig(StrictConfigModel):
     path: str | None = None
     uri: str | None = None
     aws_profile: str | None = None
-    normalizer: Literal["rule_based", "claude_cli"] = "rule_based"
+    normalizer: Literal["rule_based", "claude_sdk"] = "rule_based"
     max_object_bytes: int = Field(default=10 * 1024 * 1024, ge=1)
     max_total_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
 
@@ -35,20 +35,22 @@ class SourceConfig(StrictConfigModel):
 
 
 class AnalysisConfig(StrictConfigModel):
-    provider: Literal["rule_based", "claude_cli"] = "rule_based"
+    provider: Literal["rule_based", "claude_sdk"] = "rule_based"
     model: str = "sonnet"
     max_concurrency: int = Field(default=4, ge=1)
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
     max_input_chars: int = Field(default=100_000, ge=100)
     max_event_chars: int = Field(default=4_000, ge=100)
+    max_output_tokens: int = Field(default=8_192, ge=256, le=64_000)
+    redact_before_egress: bool = True
     external_data_egress_allowed: bool = False
 
     @model_validator(mode="after")
     def require_external_egress_opt_in(self) -> AnalysisConfig:
-        if self.provider == "claude_cli" and not self.external_data_egress_allowed:
+        if self.provider == "claude_sdk" and not self.external_data_egress_allowed:
             raise ValueError(
-                "claude_cli requires external_data_egress_allowed: true because task "
-                "content is sent to the configured Claude provider"
+                "claude_sdk requires external_data_egress_allowed: true because task "
+                "content is sent to the configured Anthropic-compatible endpoint"
             )
         return self
 
@@ -86,14 +88,14 @@ class EngineConfig(StrictConfigModel):
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("source ids must be unique")
         uses_claude_normalization = any(
-            source.type == "claude_code_jsonl" and source.normalizer == "claude_cli"
+            source.type == "claude_code_jsonl" and source.normalizer == "claude_sdk"
             for source in self.sources
         )
         if uses_claude_normalization and not self.analysis.external_data_egress_allowed:
             raise ValueError(
-                "claude_cli source normalization requires "
-                "external_data_egress_allowed: true because redacted raw records are sent "
-                "to the configured Claude provider"
+                "claude_sdk source normalization requires "
+                "external_data_egress_allowed: true because raw records are sent to "
+                "the configured Anthropic-compatible endpoint"
             )
         return self
 

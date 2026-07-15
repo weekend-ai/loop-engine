@@ -32,7 +32,7 @@ def test_engine_integrates_semantic_analyzer(tmp_path: Path) -> None:
     config = load_config(Path("tests/fixtures/config.yaml"))
     config.sources = [config.sources[0]]
     config.sources[0].path = str(Path("tests/fixtures/claude/*.jsonl").resolve())
-    config.analysis.provider = "claude_cli"
+    config.analysis.provider = "claude_sdk"
     engine = LoopEngine(config, tmp_path, semantic_analyzer=_FakeSemanticAnalyzer())
 
     result = engine.run()

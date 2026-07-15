@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from loop_engine.analyzers.base import SemanticAnalyzer
-from loop_engine.analyzers.claude_cli import ClaudeCliAnalyzer
+from loop_engine.analyzers.claude_sdk import ClaudeSdkAnalyzer
 from loop_engine.config import EngineConfig, load_config
 from loop_engine.metrics import compute_metrics
 from loop_engine.models import CanonicalEvent, OutcomeSignal, RunResult
@@ -27,12 +27,14 @@ class LoopEngine:
         self.workspace = workspace
         self.output_directory = output_directory or workspace / "output"
         self.semantic_analyzer = semantic_analyzer
-        if self.semantic_analyzer is None and config.analysis.provider == "claude_cli":
-            self.semantic_analyzer = ClaudeCliAnalyzer(
+        if self.semantic_analyzer is None and config.analysis.provider == "claude_sdk":
+            self.semantic_analyzer = ClaudeSdkAnalyzer(
                 model=config.analysis.model,
                 timeout_seconds=config.analysis.timeout_seconds,
                 max_input_chars=config.analysis.max_input_chars,
                 max_event_chars=config.analysis.max_event_chars,
+                max_output_tokens=config.analysis.max_output_tokens,
+                redact_before_egress=config.analysis.redact_before_egress,
             )
 
     @classmethod

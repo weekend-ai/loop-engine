@@ -22,7 +22,7 @@ The engine keeps analysis mechanics separate from data. Log locations, analyzer,
 - Claude Code JSONL
   - JSONL is first decoded into tolerant raw envelopes; no Claude field types are assumed at this boundary.
   - `normalizer: rule_based` maps known shapes locally and skips unsupported fields without crashing.
-  - `normalizer: claude_cli` sends bounded, recursively redacted raw records to Claude and validates returned event candidates.
+  - `normalizer: claude_sdk` sends bounded, recursively redacted raw records to Claude and validates returned event candidates.
   - Local finalization owns IDs, UTC timestamps, source namespaces, call/result pairing, and validation.
   - Canonical events retain MCP server, plugin/skill attribution, tool call IDs, and paired event IDs.
 - Local LiteLLM request JSON/JSONL
@@ -40,10 +40,10 @@ uv sync
 uv run loop --help
 ```
 
-Python 3.12+ and `uv` are required. Claude semantic analysis additionally requires an authenticated Claude Code CLI. `claude auth status` only confirms configuration; it does not prove that Vertex ADC, Bedrock credentials, or provider access actually work. Run a real isolated smoke request:
+Python 3.12+ and `uv` are required. Claude semantic analysis additionally requires Anthropic API access. Set `ANTHROPIC_API_KEY` (or `LITELLM_API_KEY`/`LITELLM_MASTER_KEY` with `ANTHROPIC_BASE_URL`/`LITELLM_BASE_URL` for a LiteLLM proxy). Verify with a real request:
 
-```bash
-claude --bare --print "Reply with OK only" --tools "" --no-session-persistence
+```python
+import anthropic; print(anthropic.Anthropic().messages.create(model="sonnet", max_tokens=10, messages=[{"role": "user", "content": "OK"}]).content[0].text)
 ```
 
 ## Quick start
@@ -76,7 +76,7 @@ sources:
   - id: claude-local
     type: claude_code_jsonl
     path: /home/user/.claude/projects/**/*.jsonl
-    normalizer: claude_cli
+    normalizer: claude_sdk
 analysis:
   provider: rule_based
   model: sonnet
@@ -90,7 +90,7 @@ Switch post-reconstruction semantic analysis to Claude:
 
 ```yaml
 analysis:
-  provider: claude_cli
+  provider: claude_sdk
   model: sonnet
   timeout_seconds: 120
   max_input_chars: 100000
@@ -100,7 +100,7 @@ analysis:
 
 Claude receives one canonical task bundle at a time and must return strict structured output. Every semantic signal must cite at least one valid event ID. Unknown IDs make the run fail rather than silently creating unsupported evidence.
 
-**Data boundary:** both `rule_based` semantic analysis and `normalizer: rule_based` stay local. Either Claude mode requires `external_data_egress_allowed: true`. Claude ingestion receives the complete raw record structure after recursive key/value credential redaction and per-string truncation, but never receives local `raw_ref` paths. Records are greedily batched under the total input limit and run with `--bare`, no tools, no slash commands, no session persistence, and a timeout. Claude can only return strict event candidates referring to supplied record IDs; deterministic local code generates final IDs, parses UTC timestamps, validates duplicate block identities, and pairs tool calls/results. Redaction is defense in depth, not a complete DLP system. If both source normalization and semantic analysis use Claude, the engine intentionally makes two separate provider phases.
+**Data boundary:** both `rule_based` semantic analysis and `normalizer: rule_based` stay local. Either Claude mode requires `external_data_egress_allowed: true`. Claude ingestion receives the complete raw record structure after recursive key/value credential redaction and per-string truncation, but never receives local `raw_ref` paths. Records are greedily batched under the total input limit and sent via the Anthropic SDK with structured JSON schema output, a timeout, and max retries. Claude can only return strict event candidates referring to supplied record IDs; deterministic local code generates final IDs, parses UTC timestamps, validates duplicate block identities, and pairs tool calls/results. Redaction is defense in depth, not a complete DLP system. If both source normalization and semantic analysis use Claude, the engine intentionally makes two separate provider phases.
 
 ## Configuration
 
@@ -112,7 +112,7 @@ sources:
   - id: claude-local
     type: claude_code_jsonl
     path: /home/user/.claude/projects/**/*.jsonl
-    normalizer: rule_based # or claude_cli
+    normalizer: rule_based # or claude_sdk
     max_object_bytes: 10485760 # per raw JSONL record
     max_total_bytes: 104857600
 
@@ -128,13 +128,13 @@ sources:
     max_total_bytes: 104857600
 
 analysis:
-  provider: claude_cli # or rule_based
+  provider: claude_sdk # or rule_based
   model: sonnet
   max_concurrency: 4
   timeout_seconds: 120
   max_input_chars: 100000
   max_event_chars: 4000
-  external_data_egress_allowed: true # required for either claude_cli phase
+  external_data_egress_allowed: true # required for either claude_sdk phase
 
 metrics:
   group_by: [task_type, model, asset_version]
@@ -193,7 +193,7 @@ The result reports baseline/candidate values, observable sample counts, absolute
 - Deterministic and LLM signals retain source event IDs.
 - Claude signals also retain short evidence quotes and confidence.
 - Proposals remain hypotheses until evaluated through an experiment.
-- The Claude adapter runs in `--bare` mode with no tools, slash commands, or session persistence.
+- The Claude adapter uses the Anthropic SDK with structured JSON schema output, a timeout, and max retries.
 - Raw source references remain attached to canonical events for local audit but are omitted from Claude bundles.
 - No automatic Skill/Prompt/KB mutation or deployment occurs in Phase 0.
 

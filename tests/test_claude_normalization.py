@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -14,7 +15,7 @@ from loop_engine.reconstruction import reconstruct_tasks
 from loop_engine.signals import extract_deterministic_signals
 from loop_engine.sources.claude_jsonl import ClaudeCodeJsonlSource
 from loop_engine.sources.claude_normalization import (
-    ClaudeCliRecordNormalizer,
+    ClaudeSdkRecordNormalizer,
     finalize_candidates,
 )
 
@@ -43,10 +44,7 @@ def test_raw_envelope_accepts_unknown_json_types_and_fallback_skips_them(
 
 
 def test_sanitized_session_fallback_handles_tools_pairing_attribution_and_usage() -> None:
-    path = Path(
-        "tests/fixtures/claude_sessions/"
-        "40e79c0c-b67f-436f-b0c1-650f9e6a5357.jsonl"
-    )
+    path = Path("tests/fixtures/claude_sessions/synthetic-current-schema.jsonl")
 
     events = list(ClaudeCodeJsonlSource("claude", str(path)).iter_events())
     tasks = reconstruct_tasks(events)
@@ -71,51 +69,55 @@ def test_sanitized_session_fallback_handles_tools_pairing_attribution_and_usage(
     assert tool_failure.value == 1.0
 
 
-def test_claude_normalizer_redacts_preserves_unknown_fields_and_finalizes_pairing() -> None:
-    captured: dict[str, object] = {}
+class FakeNormalizerMessages:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
 
-    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured["command"] = command
-        captured["input"] = kwargs["input"]
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps(
-                {
-                    "structured_output": {
-                        "events": [
-                            {
-                                "record_id": "record-1",
-                                "block_index": 0,
-                                "timestamp": "2026-07-14T08:00:00Z",
-                                "event_type": "tool_use",
-                                "session_hint": "session-1",
-                                "role": "assistant",
-                                "tool_name": "mcp__github__search",
-                                "tool_arguments": {"query": "safe"},
-                                "tool_call_id": "toolu_1",
-                                "mcp_server": "github",
-                                "plugin_name": "plugin-x",
-                                "attribution_skill": "skill-y",
-                            },
-                            {
-                                "record_id": "record-2",
-                                "block_index": 0,
-                                "timestamp": "2026-07-14T08:00:01Z",
-                                "event_type": "tool_result",
-                                "session_hint": "session-1",
-                                "role": "tool",
-                                "tool_result": "done",
-                                "content": "done",
-                                "status": "success",
-                                "tool_call_id": "toolu_1",
-                            },
-                        ]
-                    }
-                }
-            ),
-            stderr="",
+    def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=json.dumps(self.response))]
         )
+
+
+class FakeNormalizerClient:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.messages = FakeNormalizerMessages(response)
+
+
+def test_claude_normalizer_redacts_preserves_unknown_fields_and_finalizes_pairing() -> None:
+    sdk_response = {
+        "events": [
+            {
+                "record_id": "record-1",
+                "block_index": 0,
+                "timestamp": "2026-07-14T08:00:00Z",
+                "event_type": "tool_use",
+                "session_hint": "session-1",
+                "role": "assistant",
+                "tool_name": "mcp__github__search",
+                "tool_arguments": {"query": "safe"},
+                "tool_call_id": "toolu_1",
+                "mcp_server": "github",
+                "plugin_name": "plugin-x",
+                "attribution_skill": "skill-y",
+            },
+            {
+                "record_id": "record-2",
+                "block_index": 0,
+                "timestamp": "2026-07-14T08:00:01Z",
+                "event_type": "tool_result",
+                "session_hint": "session-1",
+                "role": "tool",
+                "tool_result": "done",
+                "content": "done",
+                "status": "success",
+                "tool_call_id": "toolu_1",
+            },
+        ]
+    }
+    client = FakeNormalizerClient(sdk_response)
 
     envelopes = [
         RawRecordEnvelope(
@@ -136,17 +138,18 @@ def test_claude_normalizer_redacts_preserves_unknown_fields_and_finalizes_pairin
             raw={"toolUseResult": "done"},
         ),
     ]
-    normalizer = ClaudeCliRecordNormalizer(runner=runner, timeout_seconds=9)
+    normalizer = ClaudeSdkRecordNormalizer(client=client)
 
     candidates = normalizer.normalize(envelopes)
     events = finalize_candidates(envelopes, candidates)
 
-    serialized = str(captured["input"])
+    call = client.messages.calls[0]
+    serialized = call["messages"][0]["content"]
     assert "future_field" in serialized
     assert "RAWSECRET" not in serialized
     assert "[REDACTED]" in serialized
     assert "file:///tmp/session" not in serialized
-    assert "--bare" in captured["command"]
+    assert call["output_config"]["format"]["type"] == "json_schema"
     assert events[0].paired_event_id == events[1].event_id
     assert events[1].paired_event_id == events[0].event_id
     assert events[0].mcp_server == "github"
@@ -154,26 +157,16 @@ def test_claude_normalizer_redacts_preserves_unknown_fields_and_finalizes_pairin
 
 
 def test_claude_normalizer_rejects_unknown_record_ids() -> None:
-    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps(
-                {
-                    "structured_output": {
-                        "events": [
-                            {
-                                "record_id": "invented",
-                                "timestamp": "2026-07-14T08:00:00Z",
-                                "event_type": "message",
-                            }
-                        ]
-                    }
-                }
-            ),
-            stderr="",
-        )
+    sdk_response = {
+        "events": [
+            {
+                "record_id": "invented",
+                "timestamp": "2026-07-14T08:00:00Z",
+                "event_type": "message",
+            }
+        ]
+    }
+    client = FakeNormalizerClient(sdk_response)
 
     envelope = RawRecordEnvelope(
         source_id="claude",
@@ -184,7 +177,7 @@ def test_claude_normalizer_rejects_unknown_record_ids() -> None:
     )
 
     with pytest.raises(RuntimeError, match="unknown record ID"):
-        ClaudeCliRecordNormalizer(runner=runner).normalize([envelope])
+        ClaudeSdkRecordNormalizer(client=client).normalize([envelope])
 
 
 def test_claude_jsonl_and_normalizer_limits_fail_before_external_call(
@@ -198,12 +191,8 @@ def test_claude_jsonl_and_normalizer_limits_fail_before_external_call(
     with pytest.raises(ValueError, match="record size limit"):
         list(source.iter_envelopes())
 
-    called = False
-
-    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        nonlocal called
-        called = True
-        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+    sdk_response: dict[str, Any] = {"events": []}
+    client = FakeNormalizerClient(sdk_response)
 
     envelope = RawRecordEnvelope(
         source_id="claude",
@@ -213,10 +202,10 @@ def test_claude_jsonl_and_normalizer_limits_fail_before_external_call(
         raw={"unknown": "x" * 500},
     )
     with pytest.raises(RuntimeError, match="exceeds configured limit"):
-        ClaudeCliRecordNormalizer(
-            runner=runner, max_input_chars=100, max_record_chars=1000
+        ClaudeSdkRecordNormalizer(
+            client=client, max_input_chars=100, max_record_chars=1000
         ).normalize([envelope])
-    assert called is False
+    assert client.messages.calls == []
 
 
 def test_canonical_candidate_enforces_tool_contract() -> None:
@@ -244,7 +233,7 @@ def test_claude_source_normalizer_requires_egress_opt_in(tmp_path: Path) -> None
         "  - id: claude\n"
         "    type: claude_code_jsonl\n"
         "    path: ./session.jsonl\n"
-        "    normalizer: claude_cli\n"
+        "    normalizer: claude_sdk\n"
     )
 
     with pytest.raises(ValidationError, match="external_data_egress_allowed"):
@@ -255,4 +244,4 @@ def test_claude_source_normalizer_requires_egress_opt_in(tmp_path: Path) -> None
         + "analysis:\n"
         + "  external_data_egress_allowed: true\n"
     )
-    assert load_config(path).sources[0].normalizer == "claude_cli"
+    assert load_config(path).sources[0].normalizer == "claude_sdk"

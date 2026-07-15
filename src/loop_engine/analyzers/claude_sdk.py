@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
-import subprocess
-from collections.abc import Callable
 from typing import Any
 
+from loop_engine.anthropic_client import (
+    AnthropicClient,
+    build_anthropic_client,
+    request_structured,
+    resolve_model,
+)
 from loop_engine.models import CanonicalEvent, TaskRun, TaskSemanticAnalysis
 from loop_engine.security import redact_value
-
-Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 _SYSTEM_PROMPT = """Analyze one enterprise AI task run. Return only the requested structured output.
 Classify intent and task type, then identify semantic outcome signals. Every signal must cite
@@ -16,21 +18,31 @@ specific event IDs from the supplied bundle. Do not treat silence as success or 
 Root causes are hypotheses, never facts. Do not calculate aggregate metrics.
 """
 
-class ClaudeCliAnalyzer:
+
+class ClaudeSdkAnalyzer:
     def __init__(
         self,
         model: str = "sonnet",
         timeout_seconds: int = 120,
         max_input_chars: int = 100_000,
         max_event_chars: int = 4_000,
+        max_output_tokens: int = 4_096,
+        redact_before_egress: bool = True,
         *,
-        runner: Runner = subprocess.run,
+        client: AnthropicClient | None = None,
     ) -> None:
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.max_input_chars = max_input_chars
         self.max_event_chars = max_event_chars
-        self.runner = runner
+        self.max_output_tokens = max_output_tokens
+        self.redact_before_egress = redact_before_egress
+        self.client = client
+
+    def _client(self) -> AnthropicClient:
+        if self.client is None:
+            self.client = build_anthropic_client(self.timeout_seconds)
+        return self.client
 
     def analyze(self, task: TaskRun, events: list[CanonicalEvent]) -> TaskSemanticAnalysis:
         event_ids = set(task.event_ids)
@@ -64,60 +76,23 @@ class ClaudeCliAnalyzer:
                 "evidence quotes. Unknown outcomes must remain unknown."
             ),
         }
-        bundle = redact_value(bundle, self.max_event_chars)
+        if self.redact_before_egress:
+            bundle = redact_value(bundle, self.max_event_chars)
         serialized_bundle = json.dumps(bundle, ensure_ascii=False)
         if len(serialized_bundle) > self.max_input_chars:
             raise RuntimeError(
                 "Claude analysis bundle exceeds configured limit "
                 f"({len(serialized_bundle)} > {self.max_input_chars} characters)"
             )
-        schema = json.dumps(TaskSemanticAnalysis.model_json_schema(), separators=(",", ":"))
-        command = [
-            "claude",
-            "--bare",
-            "--print",
-            "--system-prompt",
-            _SYSTEM_PROMPT,
-            "--output-format",
-            "json",
-            "--json-schema",
-            schema,
-            "--tools",
-            "",
-            "--disable-slash-commands",
-            "--no-session-persistence",
-            "--model",
-            self.model,
-        ]
-        try:
-            completed = self.runner(
-                command,
-                input=serialized_bundle,
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=self.timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise RuntimeError(
-                f"Claude CLI analysis timed out after {self.timeout_seconds} seconds"
-            ) from error
-        try:
-            payload = json.loads(completed.stdout)
-        except json.JSONDecodeError:
-            payload = {}
-        if completed.returncode != 0 or payload.get("is_error") is True:
-            detail = (
-                completed.stderr.strip() or str(payload.get("result") or completed.stdout).strip()
-            )
-            raise RuntimeError(f"Claude CLI analysis failed: {detail}")
-        structured = payload.get("structured_output")
-        if structured is None:
-            result = payload.get("result")
-            if isinstance(result, str):
-                structured = json.loads(result)
-        if structured is None:
-            raise RuntimeError("Claude CLI response did not contain structured_output")
+        structured = request_structured(
+            self._client(),
+            model=resolve_model(self.model),
+            system_prompt=_SYSTEM_PROMPT,
+            payload=serialized_bundle,
+            schema=TaskSemanticAnalysis.model_json_schema(),
+            max_output_tokens=self.max_output_tokens,
+            operation="semantic analysis",
+        )
         analysis = TaskSemanticAnalysis.model_validate(structured)
         allowed = {event.event_id for event in selected}
         for signal in analysis.signals:

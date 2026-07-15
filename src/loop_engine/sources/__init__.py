@@ -3,7 +3,7 @@ from __future__ import annotations
 from loop_engine.config import AnalysisConfig, SourceConfig
 from loop_engine.sources.base import EventSource
 from loop_engine.sources.claude_jsonl import ClaudeCodeJsonlSource
-from loop_engine.sources.claude_normalization import ClaudeCliRecordNormalizer
+from loop_engine.sources.claude_normalization import ClaudeSdkRecordNormalizer
 from loop_engine.sources.litellm import LiteLLMLocalJsonSource, LiteLLMS3JsonSource
 
 
@@ -14,14 +14,16 @@ def build_source(
         if config.path is None:
             raise ValueError("Claude Code sources require path")
         normalizer = None
-        if config.normalizer == "claude_cli":
+        if config.normalizer == "claude_sdk":
             if analysis is None:
                 raise ValueError("Claude normalization requires analysis settings")
-            normalizer = ClaudeCliRecordNormalizer(
+            normalizer = ClaudeSdkRecordNormalizer(
                 model=analysis.model,
                 timeout_seconds=analysis.timeout_seconds,
                 max_input_chars=analysis.max_input_chars,
                 max_record_chars=analysis.max_event_chars,
+                max_output_tokens=analysis.max_output_tokens,
+                redact_before_egress=analysis.redact_before_egress,
             )
         return ClaudeCodeJsonlSource(
             config.id,

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -12,7 +13,7 @@ from loop_engine.reconstruction import reconstruct_tasks
 from loop_engine.security import redact_text, redact_value
 from loop_engine.sources.claude_jsonl import ClaudeCodeJsonlSource
 from loop_engine.sources.claude_normalization import (
-    ClaudeCliRecordNormalizer,
+    ClaudeSdkRecordNormalizer,
     RuleBasedClaudeRecordNormalizer,
     finalize_candidates,
 )
@@ -111,15 +112,23 @@ def test_reconstruction_dedupes_tokens_across_multi_block_message() -> None:
     assert next(m.value for m in metrics if m.name == "tool_failure_rate") == 0.0
 
 
-def test_claude_cli_normalization_result_field_rejects_bad_json() -> None:
-    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps({"result": "{not json"}),
-            stderr="",
+class FakeReviewerMessages:
+    def __init__(self, response_text: str) -> None:
+        self.response_text = response_text
+
+    def create(self, **kwargs: Any) -> Any:
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=self.response_text)]
         )
+
+
+class FakeReviewerClient:
+    def __init__(self, response_text: str) -> None:
+        self.messages = FakeReviewerMessages(response_text)
+
+
+def test_claude_sdk_normalization_result_field_rejects_bad_json() -> None:
+    client = FakeReviewerClient("{not json")
 
     envelope = RawRecordEnvelope(
         source_id="claude",
@@ -128,8 +137,8 @@ def test_claude_cli_normalization_result_field_rejects_bad_json() -> None:
         line_number=1,
         raw={},
     )
-    with pytest.raises(RuntimeError, match="not valid JSON"):
-        ClaudeCliRecordNormalizer(runner=runner).normalize([envelope])
+    with pytest.raises(RuntimeError, match="invalid structured JSON"):
+        ClaudeSdkRecordNormalizer(client=client).normalize([envelope])
 
 
 def test_rule_based_normalizer_survives_malformed_records() -> None:
