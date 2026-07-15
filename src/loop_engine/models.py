@@ -124,26 +124,30 @@ class LlmNormalizationCandidate(BaseModel):
     All nested structures use JSON strings instead of open dicts,
     making the schema compatible with both Anthropic and OpenAI
     strict mode (which requires additionalProperties: false).
+
+    STRICT-MODE CONTRACT: every property is listed in 'required'.
+    Nullable fields use `str | None` WITHOUT a default so Pydantic
+    emits them in the required array. OpenAI strict schemas reject
+    any property not in required.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     record_id: str
-    block_index: int = Field(default=0, ge=0)
+    block_index: int = Field(ge=0)
     event_type: Literal["message", "tool_use", "tool_result", "api_error"]
-    role: str | None = None
-    content: str | None = None
-    tool_name: str | None = None
+    role: str | None
+    content: str | None
+    tool_name: str | None
     tool_arguments_json: str | None = Field(
-        default=None,
         description="Tool arguments as a JSON string. Do not use a dict/object."
     )
-    tool_result: str | None = None
-    tool_call_id: str | None = None
-    status: Literal["success", "error"] | None = None
-    mcp_server: str | None = None
-    plugin_name: str | None = None
-    attribution_skill: str | None = None
+    tool_result: str | None
+    tool_call_id: str | None
+    status: Literal["success", "error"] | None
+    mcp_server: str | None
+    plugin_name: str | None
+    attribution_skill: str | None
 
     @model_validator(mode="after")
     def validate_tool_contract(self) -> LlmNormalizationCandidate:
@@ -159,7 +163,7 @@ class LlmNormalizationBatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    events: list[LlmNormalizationCandidate] = Field(default_factory=list)
+    events: list[LlmNormalizationCandidate]
 
 
 class AssetExposure(BaseModel):

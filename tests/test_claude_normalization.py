@@ -101,32 +101,51 @@ def test_sanitized_session_fallback_handles_tools_pairing_attribution_and_usage(
     assert tool_failure.value == 1.0
 
 
+def _llm_candidate(**overrides: Any) -> dict[str, Any]:
+    """Build a complete LlmNormalizationCandidate dict with all required fields."""
+    base: dict[str, Any] = {
+        "record_id": "record",
+        "block_index": 0,
+        "event_type": "message",
+        "role": None,
+        "content": None,
+        "tool_name": None,
+        "tool_arguments_json": None,
+        "tool_result": None,
+        "tool_call_id": None,
+        "status": None,
+        "mcp_server": None,
+        "plugin_name": None,
+        "attribution_skill": None,
+    }
+    base.update(overrides)
+    return base
+
+
 def test_claude_normalizer_redacts_preserves_unknown_fields_and_finalizes_pairing() -> None:
     # LLM returns only interpreted fields — no timestamp, tokens, session_hint
     llm_response = {
         "events": [
-            {
-                "record_id": "record-1",
-                "block_index": 0,
-                "event_type": "tool_use",
-                "role": "assistant",
-                "tool_name": "mcp__github__search",
-                "tool_arguments_json": '{"query": "safe"}',
-                "tool_call_id": "toolu_1",
-                "mcp_server": "github",
-                "plugin_name": "plugin-x",
-                "attribution_skill": "skill-y",
-            },
-            {
-                "record_id": "record-2",
-                "block_index": 0,
-                "event_type": "tool_result",
-                "role": "tool",
-                "tool_result": "done",
-                "content": "done",
-                "status": "success",
-                "tool_call_id": "toolu_1",
-            },
+            _llm_candidate(
+                record_id="record-1",
+                event_type="tool_use",
+                role="assistant",
+                tool_name="mcp__github__search",
+                tool_arguments_json='{"query": "safe"}',
+                tool_call_id="toolu_1",
+                mcp_server="github",
+                plugin_name="plugin-x",
+                attribution_skill="skill-y",
+            ),
+            _llm_candidate(
+                record_id="record-2",
+                event_type="tool_result",
+                role="tool",
+                tool_result="done",
+                content="done",
+                status="success",
+                tool_call_id="toolu_1",
+            ),
         ]
     }
     fake_provider = FakeProvider(llm_response)
@@ -187,10 +206,7 @@ def test_claude_normalizer_redacts_preserves_unknown_fields_and_finalizes_pairin
 def test_claude_normalizer_rejects_unknown_record_ids() -> None:
     llm_response = {
         "events": [
-            {
-                "record_id": "invented",
-                "event_type": "message",
-            }
+            _llm_candidate(record_id="invented"),
         ]
     }
     fake_provider = FakeProvider(llm_response)
@@ -254,28 +270,25 @@ def test_canonical_candidate_enforces_tool_contract() -> None:
 def test_llm_normalization_candidate_enforces_tool_contract() -> None:
     """LlmNormalizationCandidate has its own tool_contract validator."""
     with pytest.raises(ValidationError, match="role='tool'"):
-        LlmNormalizationCandidate(
-            record_id="record",
+        LlmNormalizationCandidate(**_llm_candidate(
             event_type="tool_result",
             role="user",
-        )
+        ))
     with pytest.raises(ValidationError, match="require tool_name"):
-        LlmNormalizationCandidate(
-            record_id="record",
+        LlmNormalizationCandidate(**_llm_candidate(
             event_type="tool_use",
             role="assistant",
-        )
+        ))
 
 
 def test_llm_normalization_candidate_uses_json_string_for_args() -> None:
     """tool_arguments_json is a str, not a dict — portable across providers."""
-    candidate = LlmNormalizationCandidate(
-        record_id="record",
+    candidate = LlmNormalizationCandidate(**_llm_candidate(
         event_type="tool_use",
         role="assistant",
         tool_name="Bash",
         tool_arguments_json='{"cmd": "ls"}',
-    )
+    ))
     assert candidate.tool_arguments_json == '{"cmd": "ls"}'
 
 
@@ -315,14 +328,13 @@ def test_bounded_repair_retries_once_on_validation_failure() -> None:
             if self._call_count == 1:
                 # First response: bad structure (missing required fields)
                 return ProviderResponse(raw_text='{"events": [{"record_id": "r1"}]}')
-            # Repair response: correct
+            # Repair response: correct — all required fields present
             return ProviderResponse(raw_text=json.dumps({
-                "events": [{
-                    "record_id": "r1",
-                    "event_type": "message",
-                    "role": "assistant",
-                    "content": "hello",
-                }]
+                "events": [_llm_candidate(
+                    record_id="r1",
+                    role="assistant",
+                    content="hello",
+                )]
             }))
 
     provider = TwoResponseProvider()
@@ -341,3 +353,96 @@ def test_bounded_repair_retries_once_on_validation_failure() -> None:
     assert candidates[0].event_type == "message"
     assert len(provider.calls) == 2  # original + repair
     assert "repair" in provider.calls[1]["operation"]
+
+
+def _check_openai_strict_compliance(
+    schema: dict[str, Any],
+    path: str = "root",
+    defs: dict[str, Any] | None = None,
+) -> list[str]:
+    """Recursively validate a JSON schema against OpenAI strict-mode rules.
+
+    Rules:
+    - Every object must have additionalProperties: false
+    - Every property key must appear in required
+    - No default values (properties must always be populated)
+    - $ref targets must also be compliant
+    """
+    if defs is None:
+        defs = schema.get("$defs", {})
+    errors: list[str] = []
+
+    if "$ref" in schema:
+        ref_name = schema["$ref"].split("/")[-1]
+        ref_schema = defs.get(ref_name, {})
+        errors.extend(_check_openai_strict_compliance(ref_schema, f"{path}.$ref({ref_name})", defs))
+        return errors
+
+    if schema.get("type") != "object":
+        # Check items in arrays
+        if schema.get("type") == "array" and "items" in schema:
+            errors.extend(_check_openai_strict_compliance(
+                schema["items"], f"{path}.items", defs
+            ))
+        # Check anyOf branches
+        if "anyOf" in schema:
+            for i, branch in enumerate(schema["anyOf"]):
+                errors.extend(_check_openai_strict_compliance(
+                    branch, f"{path}.anyOf[{i}]", defs
+                ))
+        return errors
+
+    props = schema.get("properties", {})
+    required = set(schema.get("required", []))
+
+    # Rule 1: additionalProperties must be false
+    if schema.get("additionalProperties") is not False:
+        errors.append(f"{path}: additionalProperties is not false")
+
+    # Rule 2: every property must be in required
+    missing_required = set(props.keys()) - required
+    if missing_required:
+        errors.append(f"{path}: properties not in required: {sorted(missing_required)}")
+
+    # Rule 3: no defaults allowed
+    for prop_name, prop_schema in props.items():
+        if "default" in prop_schema:
+            errors.append(f"{path}.{prop_name}: has default value (not allowed in strict mode)")
+
+    # Recurse into nested object/array properties
+    for prop_name, prop_schema in props.items():
+        errors.extend(_check_openai_strict_compliance(
+            prop_schema, f"{path}.{prop_name}", defs
+        ))
+
+    return errors
+
+
+def test_llm_normalization_schema_is_openai_strict_compatible() -> None:
+    """The generated JSON schema must pass OpenAI strict-mode validation.
+
+    This test catches the root cause: Pydantic fields with `= None` produce
+    'default: null' and are omitted from 'required', which OpenAI rejects.
+    """
+    from loop_engine.models import LlmNormalizationBatch
+
+    schema = LlmNormalizationBatch.model_json_schema()
+    errors = _check_openai_strict_compliance(schema)
+
+    assert errors == [], (
+        "LLM schema is NOT OpenAI strict-mode compatible:\n"
+        + "\n".join(f"  - {e}" for e in errors)
+    )
+
+    # Also verify specific structural expectations
+    candidate_schema = schema["$defs"]["LlmNormalizationCandidate"]
+    candidate_props = set(candidate_schema["properties"].keys())
+    candidate_required = set(candidate_schema["required"])
+    assert candidate_props == candidate_required, (
+        f"Properties/required mismatch: "
+        f"extra in props={candidate_props - candidate_required}, "
+        f"extra in required={candidate_required - candidate_props}"
+    )
+    assert candidate_schema["additionalProperties"] is False
+    assert schema["additionalProperties"] is False
+    assert "events" in set(schema.get("required", []))
