@@ -118,11 +118,11 @@ def _build_analysis_bundle(
                 "attribution_skill": event.attribution_skill,
                 "paired_event_id": event.paired_event_id,
                 "invocation_ids": [
-                    inv.get("invocation_id", "")
+                    inv.invocation_id
                     for inv in event.invocations
                 ],
                 "context_component_kinds": [
-                    comp.get("kind", "")
+                    comp.kind
                     for comp in event.context_components
                 ],
             }

@@ -497,13 +497,13 @@ def _review_completeness(
         et = rec["event_type"]
         sse_types.setdefault(et, []).append(rec)
 
-    # Count only TEXT content_block_start events — tool_use and
-    # thinking blocks are not assistant messages
-    text_blocks = [
-        rec for rec in sse_types.get("content_block_start", [])
-        if rec.get("sub_type") == "text"
-    ]
-    text_blocks_in_source = len(text_blocks)
+    # Count assistant message_start events in the SSE stream.
+    # A single assistant message can contain multiple content blocks
+    # (text + tool_use), so counting content_block_start would
+    # overcount. message_start is one per API response.
+    message_starts_in_source = len(
+        sse_types.get("message_start", [])
+    )
 
     normalized_roles = [m.role for m in bundle_result.messages]
     has_tool_results = len(bundle_result.tool_results) > 0
@@ -511,20 +511,20 @@ def _review_completeness(
         1 for r in normalized_roles if r == "assistant"
     )
 
-    # Check 1: text content blocks in source exceed assistant messages
+    # Check 1: source has more message_start events than assistant
+    # messages in the bundle — a response was likely dropped
     if (has_tool_results
-            and text_blocks_in_source > 0
-            and assistant_msgs_in_bundle < text_blocks_in_source):
-        for rec in text_blocks:
+            and message_starts_in_source > 0
+            and assistant_msgs_in_bundle < message_starts_in_source):
+        for rec in sse_types.get("message_start", []):
             issues.append(CompletenessIssue(
                 record_id=rec["record_id"],
                 artifact_id=rec["artifact_id"],
                 field="messages",
                 description=(
-                    "Source SSE stream contains a text "
-                    "content_block_start event not reflected in "
-                    "normalized messages. A final assistant response "
-                    "may have been dropped."
+                    "Source SSE stream contains a message_start "
+                    "event not reflected in normalized messages. "
+                    "A final assistant response may have been dropped."
                 ),
             ))
 
@@ -649,13 +649,11 @@ def _bundle_to_candidates(
             http_status=http_status if assign_usage else None,
             stop_reason=stop_reason if assign_usage else None,
             invocations=(
-                [inv.model_dump(mode="json")
-                 for inv in bundle_result.invocations]
+                list(bundle_result.invocations)
                 if assign_usage else []
             ),
             context_components=(
-                [comp.model_dump(mode="json")
-                 for comp in bundle_result.context_components]
+                list(bundle_result.context_components)
                 if assign_usage else []
             ),
             coverage_artifacts_used=(

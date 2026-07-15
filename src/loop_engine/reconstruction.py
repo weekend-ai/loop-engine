@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Any, Literal
+from typing import Literal
 
 from loop_engine.models import (
     AssetExposure,
@@ -198,8 +198,8 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
         ]
 
         # Aggregate invocations, components, coverage from events
-        all_invocations: list[Any] = []
-        all_components: list[Any] = []
+        all_invocations: list[OperationalInvocation] = []
+        all_components: list[ContextComponent] = []
         all_coverage_used: list[str] = []
         all_coverage_skipped: list[str] = []
         all_coverage_unresolved: list[str] = []
@@ -215,29 +215,29 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
             )
 
         # Deduplicate invocations by invocation_id
-        deduped_invocations = _dedup_invocations_raw(all_invocations)
-        deduped_components = _dedup_components_raw(all_components)
+        deduped_invocations = _dedup_invocations(all_invocations)
+        deduped_components = _dedup_components(all_components)
 
         # When invocations exist, derive totals from them
         if deduped_invocations:
             inv_input = sum(
-                inv.get("input_tokens") or 0
+                inv.input_tokens or 0
                 for inv in deduped_invocations
             )
             inv_output = sum(
-                inv.get("output_tokens") or 0
+                inv.output_tokens or 0
                 for inv in deduped_invocations
             )
             inv_cache_create = sum(
-                inv.get("cache_creation_input_tokens") or 0
+                inv.cache_creation_input_tokens or 0
                 for inv in deduped_invocations
             )
             inv_cache_read = sum(
-                inv.get("cache_read_input_tokens") or 0
+                inv.cache_read_input_tokens or 0
                 for inv in deduped_invocations
             )
             inv_latency = sum(
-                inv.get("latency_ms") or 0
+                inv.latency_ms or 0
                 for inv in deduped_invocations
             )
             final_input = inv_input
@@ -246,16 +246,16 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
             final_cache_read = inv_cache_read
             final_latency = inv_latency or None
             # Derive HTTP/stop from invocations
-            inv_http: list[int] = sorted(
-                int(inv["http_status"])
+            inv_http: list[int] = sorted(set(
+                inv.http_status
                 for inv in deduped_invocations
-                if inv.get("http_status") is not None
-            )
-            inv_stop: list[str] = sorted(
-                str(inv["stop_reason"])
+                if inv.http_status is not None
+            ))
+            inv_stop: list[str] = sorted(set(
+                inv.stop_reason
                 for inv in deduped_invocations
-                if inv.get("stop_reason") is not None
-            )
+                if inv.stop_reason is not None
+            ))
             final_http = inv_http if inv_http else http_statuses
             final_stop = inv_stop if inv_stop else stop_reasons_from_events
         else:
@@ -297,14 +297,8 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
                 cache_read_input_tokens=final_cache_read,
                 http_statuses=final_http,
                 stop_reasons=final_stop,
-                invocations=[
-                    OperationalInvocation.model_validate(inv)
-                    for inv in deduped_invocations
-                ],
-                context_components=[
-                    ContextComponent.model_validate(comp)
-                    for comp in deduped_components
-                ],
+                invocations=deduped_invocations,
+                context_components=deduped_components,
                 coverage_artifacts_used=sorted(set(
                     all_coverage_used
                 )),
@@ -321,29 +315,3 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
             )
         )
     return tasks
-
-
-def _dedup_invocations_raw(
-    invocations: list[Any],
-) -> list[dict[str, Any]]:
-    """Deduplicate invocations by invocation_id."""
-    seen: dict[str, dict[str, Any]] = {}
-    for inv in invocations:
-        d = inv if isinstance(inv, dict) else inv.model_dump(mode="json")
-        iid = d.get("invocation_id", "")
-        if iid not in seen:
-            seen[iid] = d
-    return list(seen.values())
-
-
-def _dedup_components_raw(
-    components: list[Any],
-) -> list[dict[str, Any]]:
-    """Deduplicate components by (kind, name)."""
-    seen: dict[tuple[str, str | None], dict[str, Any]] = {}
-    for comp in components:
-        d = comp if isinstance(comp, dict) else comp.model_dump(mode="json")
-        key = (d.get("kind", ""), d.get("name"))
-        if key not in seen:
-            seen[key] = d
-    return list(seen.values())

@@ -243,10 +243,10 @@ def test_raw_trace_propagation_invocations_on_canonical_event() -> None:
     # Invocations carried through
     assert len(usage_event.invocations) == 1
     inv = usage_event.invocations[0]
-    assert inv["invocation_id"] == "inv_01"
-    assert inv["cache_creation_input_tokens"] == 96651
-    assert inv["stop_reason"] == "tool_use"
-    assert inv["tier"] == "sonnet"
+    assert inv.invocation_id == "inv_01"
+    assert inv.cache_creation_input_tokens == 96651
+    assert inv.stop_reason == "tool_use"
+    assert inv.tier == "sonnet"
 
     # Context components carried through
     assert len(usage_event.context_components) == 2
@@ -410,9 +410,9 @@ def test_completeness_detects_dropped_final_response() -> None:
         "Review should have at least one issue for the missing response"
     )
     assert any(
-        "content_block_start" in iss.description
+        "message_start" in iss.description
         for iss in review.issues
-    ), "Issue should reference the content_block_start SSE event"
+    ), "Issue should reference the message_start SSE event"
 
 
 def test_completeness_does_not_flag_valid_complete_trace() -> None:

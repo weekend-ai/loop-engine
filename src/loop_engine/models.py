@@ -7,6 +7,76 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# ---------------------------------------------------------------------------
+# Shared evidence / telemetry models (must precede CanonicalEvent)
+# ---------------------------------------------------------------------------
+
+
+class EvidenceRef(BaseModel):
+    """Citation linking an extracted fact to a source artifact."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str
+    locator: str | None = Field(
+        description=(
+            "Where in the artifact: JSON path, line number, "
+            "stream event index, or null for whole-artifact."
+        )
+    )
+
+
+class OperationalInvocation(BaseModel):
+    """Per-call telemetry for a model invocation within a trace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    invocation_id: str
+    model: str | None
+    start_timestamp: str | None
+    end_timestamp: str | None
+    latency_ms: int | None
+    http_status: int | None
+    stop_reason: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_creation_input_tokens: int | None
+    cache_read_input_tokens: int | None
+    cache_creation_input_tokens_5m: int | None
+    cache_creation_input_tokens_1h: int | None
+    thinking_tokens: int | None
+    tier: str | None = Field(
+        description="Model tier: e.g. 'sonnet', 'haiku', 'opus'."
+    )
+    service_tier: str | None = Field(
+        description="API service tier if reported."
+    )
+    evidence: list[EvidenceRef]
+
+
+class ContextComponent(BaseModel):
+    """A measured section of the context window."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(
+        description=(
+            "Type: system_prompt, skill_instructions, tool_definitions, "
+            "session_context, harness, messages, or custom."
+        )
+    )
+    name: str | None
+    char_count: int | None
+    item_count: int | None
+    cacheable: bool | None
+    summary: str | None
+    evidence: list[EvidenceRef]
+
+
+# ---------------------------------------------------------------------------
+# Canonical event pipeline
+# ---------------------------------------------------------------------------
+
 
 class CanonicalEvent(BaseModel):
     event_id: str
@@ -39,8 +109,8 @@ class CanonicalEvent(BaseModel):
     cache_read_input_tokens: int | None = None
     http_status: int | None = None
     stop_reason: str | None = None
-    invocations: list[dict[str, Any]] = Field(default_factory=list)
-    context_components: list[dict[str, Any]] = Field(default_factory=list)
+    invocations: list[OperationalInvocation] = Field(default_factory=list)
+    context_components: list[ContextComponent] = Field(default_factory=list)
     coverage_artifacts_used: list[str] = Field(default_factory=list)
     coverage_artifacts_skipped: list[str] = Field(default_factory=list)
     coverage_unresolved_fields: list[str] = Field(default_factory=list)
@@ -105,8 +175,8 @@ class CanonicalEventCandidate(BaseModel):
     cache_read_input_tokens: int | None = Field(default=None, ge=0)
     http_status: int | None = None
     stop_reason: str | None = None
-    invocations: list[dict[str, Any]] = Field(default_factory=list)
-    context_components: list[dict[str, Any]] = Field(default_factory=list)
+    invocations: list[OperationalInvocation] = Field(default_factory=list)
+    context_components: list[ContextComponent] = Field(default_factory=list)
     coverage_artifacts_used: list[str] = Field(default_factory=list)
     coverage_artifacts_skipped: list[str] = Field(default_factory=list)
     coverage_unresolved_fields: list[str] = Field(default_factory=list)
@@ -187,24 +257,6 @@ class LlmNormalizationBatch(BaseModel):
 # ---------------------------------------------------------------------------
 # NormalizedTraceBundle — LLM-first raw trace output schema
 # ---------------------------------------------------------------------------
-# The LLM returns ONE of these per capture bundle. Every extracted fact
-# cites the artifact_id it came from via an EvidenceRef. Deterministic
-# code validates citations, pairs tools, deduplicates, and converts to
-# CanonicalEvents. No provider-specific field parsing in Python.
-
-
-class EvidenceRef(BaseModel):
-    """Citation linking an extracted fact to a source artifact."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    artifact_id: str
-    locator: str | None = Field(
-        description=(
-            "Where in the artifact: JSON path, line number, "
-            "stream event index, or null for whole-artifact."
-        )
-    )
 
 
 class TraceBundleIdentity(BaseModel):
@@ -308,53 +360,6 @@ class TraceCoverage(BaseModel):
     )
 
 
-class OperationalInvocation(BaseModel):
-    """Per-call telemetry for a model invocation within a trace."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    invocation_id: str
-    model: str | None
-    start_timestamp: str | None
-    end_timestamp: str | None
-    latency_ms: int | None
-    http_status: int | None
-    stop_reason: str | None
-    input_tokens: int | None
-    output_tokens: int | None
-    cache_creation_input_tokens: int | None
-    cache_read_input_tokens: int | None
-    cache_creation_input_tokens_5m: int | None
-    cache_creation_input_tokens_1h: int | None
-    thinking_tokens: int | None
-    tier: str | None = Field(
-        description="Model tier: e.g. 'sonnet', 'haiku', 'opus'."
-    )
-    service_tier: str | None = Field(
-        description="API service tier if reported."
-    )
-    evidence: list[EvidenceRef]
-
-
-class ContextComponent(BaseModel):
-    """A measured section of the context window."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    kind: str = Field(
-        description=(
-            "Type: system_prompt, skill_instructions, tool_definitions, "
-            "session_context, harness, messages, or custom."
-        )
-    )
-    name: str | None
-    char_count: int | None
-    item_count: int | None
-    cacheable: bool | None
-    summary: str | None
-    evidence: list[EvidenceRef]
-
-
 class CompletenessIssue(BaseModel):
     """A specific gap found during completeness review."""
 
@@ -404,6 +409,11 @@ class NormalizedTraceBundle(BaseModel):
     invocations: list[OperationalInvocation]
     context_components: list[ContextComponent]
     coverage: TraceCoverage
+
+
+# ---------------------------------------------------------------------------
+# Task reconstruction / analysis models
+# ---------------------------------------------------------------------------
 
 
 class AssetExposure(BaseModel):
