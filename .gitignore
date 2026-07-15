@@ -11,3 +11,8 @@ tests/output/
 output/
 *.duckdb
 .env
+
+# Local config files (contain machine-specific paths and secrets)
+local-session.yaml
+raw-capture.yaml
+*.local.yaml

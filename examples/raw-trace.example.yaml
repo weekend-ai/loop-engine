@@ -1,0 +1,35 @@
+# loop-engine raw trace analysis configuration
+#
+# Quick start:
+#   cp examples/raw-trace.example.yaml raw-capture.yaml
+#   # Edit path and provider settings below
+#   uv run loop validate -c raw-capture.yaml
+#   uv run loop run -c raw-capture.yaml
+
+version: 1
+
+sources:
+  - id: relay-capture
+    type: raw_trace
+    path: ./captures                  # path to capture directory or glob
+    normalizer: claude_sdk
+
+analysis:
+  provider: claude_sdk
+  provider_name: openai               # anthropic | openai
+  model: claude-sonnet-4-20250514        # or any LiteLLM-compatible model
+  timeout_seconds: 120
+  max_input_chars: 100000
+  max_event_chars: 10000
+  max_output_tokens: 16384
+  redact_before_egress: true
+  external_data_egress_allowed: true
+  repair: true
+
+metrics:
+  group_by: [task_type]
+
+workspace: .loop-engine
+output:
+  directory: output
+  formats: [json, markdown, duckdb]
