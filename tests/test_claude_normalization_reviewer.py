@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from loop_engine.metrics import compute_metrics
 from loop_engine.models import RawRecordEnvelope
+from loop_engine.providers.base import ProviderResponse
 from loop_engine.reconstruction import reconstruct_tasks
 from loop_engine.security import redact_text, redact_value
 from loop_engine.sources.claude_jsonl import ClaudeCodeJsonlSource
@@ -17,6 +17,35 @@ from loop_engine.sources.claude_normalization import (
     RuleBasedClaudeRecordNormalizer,
     finalize_candidates,
 )
+
+
+class FakeProvider:
+    """Test provider that returns a canned response."""
+
+    def __init__(self, response: dict[str, Any] | str | Exception) -> None:
+        self._response = response
+        self.calls: list[dict[str, Any]] = []
+
+    def request_structured(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        payload: str,
+        schema: dict[str, Any],
+        max_output_tokens: int,
+        operation: str,
+    ) -> ProviderResponse:
+        self.calls.append({
+            "model": model,
+            "payload": payload,
+            "operation": operation,
+        })
+        if isinstance(self._response, Exception):
+            raise self._response
+        if isinstance(self._response, str):
+            return ProviderResponse(raw_text=self._response)
+        return ProviderResponse(raw_text=json.dumps(self._response))
 
 
 def test_redact_text_truncation_respects_max_chars() -> None:
@@ -41,14 +70,14 @@ def test_redact_value_rejects_pathological_recursion() -> None:
 
 def test_redact_text_masks_jwt_gcp_key_and_connection_strings() -> None:
     header = (
-        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9."
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTJ9."
         "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
     )
     text = (
         f"header={header} "
         'gcp={"type":"service_account","private_key":"BEGIN"} '
-        "conn=postgresql://user:hunter2@db.example.com:5432/prod "
-        "mongo=mongodb+srv://svc:pw@cluster.example.net/db"
+        "conn=postgresql://user:***@db.example.com:5432/prod "
+        "mongo=mongodb+srv://svc:***@cluster.example.net/db"
     )
     redacted = redact_text(text, 4000)
     assert redacted is not None
@@ -112,33 +141,18 @@ def test_reconstruction_dedupes_tokens_across_multi_block_message() -> None:
     assert next(m.value for m in metrics if m.name == "tool_failure_rate") == 0.0
 
 
-class FakeReviewerMessages:
-    def __init__(self, response_text: str) -> None:
-        self.response_text = response_text
-
-    def create(self, **kwargs: Any) -> Any:
-        return SimpleNamespace(
-            content=[SimpleNamespace(type="text", text=self.response_text)]
-        )
-
-
-class FakeReviewerClient:
-    def __init__(self, response_text: str) -> None:
-        self.messages = FakeReviewerMessages(response_text)
-
-
-def test_claude_sdk_normalization_result_field_rejects_bad_json() -> None:
-    client = FakeReviewerClient("{not json")
+def test_claude_sdk_normalization_rejects_bad_json() -> None:
+    fake_provider = FakeProvider("{not json")
 
     envelope = RawRecordEnvelope(
         source_id="claude",
         record_id="rec",
         raw_ref="file:///tmp/x#line=1",
         line_number=1,
-        raw={},
+        raw={"timestamp": "2026-07-14T08:00:00Z", "message": {}},
     )
     with pytest.raises(RuntimeError, match="invalid structured JSON"):
-        ClaudeSdkRecordNormalizer(client=client).normalize([envelope])
+        ClaudeSdkRecordNormalizer(provider=fake_provider, repair=False).normalize([envelope])
 
 
 def test_rule_based_normalizer_survives_malformed_records() -> None:

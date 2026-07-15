@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from loop_engine.anthropic_client import (
-    AnthropicClient,
-    build_anthropic_client,
-    request_structured,
+from loop_engine.models import CanonicalEvent, TaskRun, TaskSemanticAnalysis
+from loop_engine.providers.base import ProviderAdapter
+from loop_engine.providers.registry import (
+    build_provider,
+    request_and_validate,
     resolve_model,
 )
-from loop_engine.models import CanonicalEvent, TaskRun, TaskSemanticAnalysis
 from loop_engine.security import redact_value
 
 _SYSTEM_PROMPT = """Analyze one enterprise AI task run. Return only the requested structured output.
@@ -28,8 +28,11 @@ class ClaudeSdkAnalyzer:
         max_event_chars: int = 4_000,
         max_output_tokens: int = 4_096,
         redact_before_egress: bool = True,
+        provider_name: str = "anthropic",
+        repair: bool = True,
         *,
-        client: AnthropicClient | None = None,
+        client: Any | None = None,
+        provider: ProviderAdapter | None = None,
     ) -> None:
         self.model = model
         self.timeout_seconds = timeout_seconds
@@ -37,12 +40,12 @@ class ClaudeSdkAnalyzer:
         self.max_event_chars = max_event_chars
         self.max_output_tokens = max_output_tokens
         self.redact_before_egress = redact_before_egress
-        self.client = client
-
-    def _client(self) -> AnthropicClient:
-        if self.client is None:
-            self.client = build_anthropic_client(self.timeout_seconds)
-        return self.client
+        self.repair = repair
+        self._provider = provider or build_provider(
+            provider_name,  # type: ignore[arg-type]
+            timeout_seconds=timeout_seconds,
+            client=client,
+        )
 
     def analyze(self, task: TaskRun, events: list[CanonicalEvent]) -> TaskSemanticAnalysis:
         event_ids = set(task.event_ids)
@@ -84,19 +87,20 @@ class ClaudeSdkAnalyzer:
                 "Claude analysis bundle exceeds configured limit "
                 f"({len(serialized_bundle)} > {self.max_input_chars} characters)"
             )
-        structured = request_structured(
-            self._client(),
+        result = request_and_validate(
+            self._provider,
             model=resolve_model(self.model),
             system_prompt=_SYSTEM_PROMPT,
             payload=serialized_bundle,
-            schema=TaskSemanticAnalysis.model_json_schema(),
+            target_type=TaskSemanticAnalysis,
             max_output_tokens=self.max_output_tokens,
             operation="semantic analysis",
+            repair=self.repair,
         )
-        analysis = TaskSemanticAnalysis.model_validate(structured)
+        assert isinstance(result, TaskSemanticAnalysis)
         allowed = {event.event_id for event in selected}
-        for signal in analysis.signals:
+        for signal in result.signals:
             unknown = set(signal.evidence_event_ids) - allowed
             if unknown:
                 raise RuntimeError(f"Claude cited unknown event IDs: {sorted(unknown)}")
-        return analysis
+        return result

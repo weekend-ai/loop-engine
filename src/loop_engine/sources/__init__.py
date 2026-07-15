@@ -24,6 +24,7 @@ def build_source(
                 max_record_chars=analysis.max_event_chars,
                 max_output_tokens=analysis.max_output_tokens,
                 redact_before_egress=analysis.redact_before_egress,
+                provider_name=analysis.provider_name,
             )
         return ClaudeCodeJsonlSource(
             config.id,

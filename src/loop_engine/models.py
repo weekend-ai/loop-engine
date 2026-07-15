@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -20,7 +21,7 @@ class CanonicalEvent(BaseModel):
     content_hash: str | None = None
     model: str | None = None
     tool_name: str | None = None
-    tool_arguments: dict[str, Any] | None = None
+    tool_arguments_json: str | None = None
     tool_result: str | None = None
     status: str | None = None
     input_tokens: int | None = None
@@ -36,6 +37,17 @@ class CanonicalEvent(BaseModel):
     asset_markers: list[str] = Field(default_factory=list)
     raw_ref: str
 
+    @property
+    def tool_arguments(self) -> dict[str, Any] | None:
+        """Parse tool_arguments_json for backward compatibility."""
+        if self.tool_arguments_json is None:
+            return None
+        try:
+            parsed = json.loads(self.tool_arguments_json)
+            return parsed if isinstance(parsed, dict) else None
+        except (json.JSONDecodeError, TypeError):
+            return None
+
 
 class RawRecordEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
@@ -48,6 +60,14 @@ class RawRecordEnvelope(BaseModel):
 
 
 class CanonicalEventCandidate(BaseModel):
+    """Full normalized candidate after deterministic enrichment from envelope.
+
+    This is the internal analytical model — NOT what the LLM returns.
+    The LLM returns LlmNormalizationCandidate (portable closed schema);
+    envelope facts (timestamp, tokens, session, etc.) are joined back
+    deterministically in finalize_candidates.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     record_id: str
@@ -61,7 +81,7 @@ class CanonicalEventCandidate(BaseModel):
     content: str | None = None
     model: str | None = None
     tool_name: str | None = None
-    tool_arguments: dict[str, Any] | None = None
+    tool_arguments_json: str | None = None
     tool_result: str | None = None
     status: Literal["success", "error"] | None = None
     input_tokens: int | None = Field(default=None, ge=0)
@@ -81,11 +101,65 @@ class CanonicalEventCandidate(BaseModel):
             raise ValueError("tool_use candidates require tool_name")
         return self
 
+    @property
+    def tool_arguments(self) -> dict[str, Any] | None:
+        """Parse tool_arguments_json for backward compatibility."""
+        if self.tool_arguments_json is None:
+            return None
+        try:
+            parsed = json.loads(self.tool_arguments_json)
+            return parsed if isinstance(parsed, dict) else None
+        except (json.JSONDecodeError, TypeError):
+            return None
 
-class CanonicalEventCandidateBatch(BaseModel):
+
+class LlmNormalizationCandidate(BaseModel):
+    """Portable closed schema for LLM structured output.
+
+    Contains ONLY interpreted fields the LLM must provide.
+    Immutable envelope facts (timestamp, tokens, session_hint, etc.)
+    are NOT requested from the LLM — they are joined back from the
+    envelope deterministically using record_id + block_index.
+
+    All nested structures use JSON strings instead of open dicts,
+    making the schema compatible with both Anthropic and OpenAI
+    strict mode (which requires additionalProperties: false).
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    events: list[CanonicalEventCandidate] = Field(default_factory=list)
+    record_id: str
+    block_index: int = Field(default=0, ge=0)
+    event_type: Literal["message", "tool_use", "tool_result", "api_error"]
+    role: str | None = None
+    content: str | None = None
+    tool_name: str | None = None
+    tool_arguments_json: str | None = Field(
+        default=None,
+        description="Tool arguments as a JSON string. Do not use a dict/object."
+    )
+    tool_result: str | None = None
+    tool_call_id: str | None = None
+    status: Literal["success", "error"] | None = None
+    mcp_server: str | None = None
+    plugin_name: str | None = None
+    attribution_skill: str | None = None
+
+    @model_validator(mode="after")
+    def validate_tool_contract(self) -> LlmNormalizationCandidate:
+        if self.event_type == "tool_result" and self.role != "tool":
+            raise ValueError("tool_result candidates require role='tool'")
+        if self.event_type == "tool_use" and not self.tool_name:
+            raise ValueError("tool_use candidates require tool_name")
+        return self
+
+
+class LlmNormalizationBatch(BaseModel):
+    """Batch response wrapper for LLM normalization output."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    events: list[LlmNormalizationCandidate] = Field(default_factory=list)
 
 
 class AssetExposure(BaseModel):

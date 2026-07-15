@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -10,25 +9,37 @@ from pydantic import ValidationError
 
 from loop_engine.analyzers.claude_sdk import ClaudeSdkAnalyzer
 from loop_engine.models import AssetExposure, CanonicalEvent, TaskRun, TaskSemanticAnalysis
+from loop_engine.providers.base import ProviderResponse
 
 
-class FakeMessages:
+class FakeProvider:
+    """Test provider that returns a canned response or raises."""
+
     def __init__(self, response: dict[str, Any] | Exception) -> None:
-        self.response = response
+        self._response = response
         self.calls: list[dict[str, Any]] = []
 
-    def create(self, **kwargs: Any) -> Any:
-        self.calls.append(kwargs)
-        if isinstance(self.response, Exception):
-            raise self.response
-        return SimpleNamespace(
-            content=[SimpleNamespace(type="text", text=json.dumps(self.response))]
-        )
-
-
-class FakeClient:
-    def __init__(self, response: dict[str, Any] | Exception) -> None:
-        self.messages = FakeMessages(response)
+    def request_structured(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        payload: str,
+        schema: dict[str, Any],
+        max_output_tokens: int,
+        operation: str,
+    ) -> ProviderResponse:
+        self.calls.append({
+            "model": model,
+            "system": system_prompt,
+            "payload": payload,
+            "schema": schema,
+            "max_output_tokens": max_output_tokens,
+            "operation": operation,
+        })
+        if isinstance(self._response, Exception):
+            raise self._response
+        return ProviderResponse(raw_text=json.dumps(self._response))
 
 
 def _task_and_events() -> tuple[TaskRun, list[CanonicalEvent]]:
@@ -95,17 +106,18 @@ def _analysis_response() -> dict[str, Any]:
 
 
 def test_claude_sdk_analyzer_uses_schema_and_preserves_evidence() -> None:
-    client = FakeClient(_analysis_response())
+    provider = FakeProvider(_analysis_response())
     task, events = _task_and_events()
 
-    analysis = ClaudeSdkAnalyzer(model="litellm-claude", client=client).analyze(task, events)
+    analysis = ClaudeSdkAnalyzer(
+        model="litellm-claude", provider=provider, repair=False
+    ).analyze(task, events)
 
     assert analysis.task_type == "coding_debugging"
     assert analysis.signals[0].evidence_event_ids == ["e2"]
-    call = client.messages.calls[0]
+    call = provider.calls[0]
     assert call["model"] == "litellm-claude"
-    assert call["output_config"]["format"]["type"] == "json_schema"
-    serialized_input = call["messages"][0]["content"]
+    serialized_input = call["payload"]
     assert "evidence_event_ids" in serialized_input
     for secret in (
         "super-secret-value",
@@ -121,33 +133,34 @@ def test_claude_sdk_analyzer_uses_schema_and_preserves_evidence() -> None:
 
 
 def test_claude_sdk_analyzer_can_disable_redaction() -> None:
-    client = FakeClient(_analysis_response())
+    provider = FakeProvider(_analysis_response())
     task, events = _task_and_events()
 
     ClaudeSdkAnalyzer(
-        client=client,
+        provider=provider,
         redact_before_egress=False,
+        repair=False,
     ).analyze(task, events)
 
-    serialized_input = client.messages.calls[0]["messages"][0]["content"]
+    serialized_input = provider.calls[0]["payload"]
     assert "super-secret-value" in serialized_input
     assert "MODELSECRET" in serialized_input
 
 
-def test_claude_sdk_analyzer_surfaces_sdk_error() -> None:
-    client = FakeClient(RuntimeError("credentials unavailable"))
+def test_claude_sdk_analyzer_surfaces_provider_error() -> None:
+    provider = FakeProvider(RuntimeError("credentials unavailable"))
     task, events = _task_and_events()
 
     with pytest.raises(RuntimeError, match="credentials unavailable"):
-        ClaudeSdkAnalyzer(client=client).analyze(task, events)
+        ClaudeSdkAnalyzer(provider=provider, repair=False).analyze(task, events)
 
 
 def test_claude_sdk_timeout_is_reported() -> None:
-    client = FakeClient(TimeoutError("timed out"))
+    provider = FakeProvider(TimeoutError("timed out"))
     task, events = _task_and_events()
 
-    with pytest.raises(RuntimeError, match="timed out"):
-        ClaudeSdkAnalyzer(client=client).analyze(task, events)
+    with pytest.raises(TimeoutError, match="timed out"):
+        ClaudeSdkAnalyzer(provider=provider, repair=False).analyze(task, events)
 
 
 def test_semantic_signal_requires_evidence_event_id() -> None:
@@ -170,10 +183,12 @@ def test_semantic_signal_requires_evidence_event_id() -> None:
 
 
 def test_claude_sdk_rejects_oversized_bundle_before_request() -> None:
-    client = FakeClient(_analysis_response())
+    provider = FakeProvider(_analysis_response())
     task, events = _task_and_events()
     events[0].content = "x" * 1000
 
     with pytest.raises(RuntimeError, match="exceeds configured limit"):
-        ClaudeSdkAnalyzer(max_input_chars=100, client=client).analyze(task, events)
-    assert client.messages.calls == []
+        ClaudeSdkAnalyzer(
+            max_input_chars=100, provider=provider, repair=False
+        ).analyze(task, events)
+    assert provider.calls == []

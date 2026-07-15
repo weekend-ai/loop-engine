@@ -35,6 +35,8 @@ class LoopEngine:
                 max_event_chars=config.analysis.max_event_chars,
                 max_output_tokens=config.analysis.max_output_tokens,
                 redact_before_egress=config.analysis.redact_before_egress,
+                provider_name=config.analysis.provider_name,
+                repair=config.analysis.repair,
             )
 
     @classmethod

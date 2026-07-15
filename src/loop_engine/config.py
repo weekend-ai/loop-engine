@@ -36,6 +36,7 @@ class SourceConfig(StrictConfigModel):
 
 class AnalysisConfig(StrictConfigModel):
     provider: Literal["rule_based", "claude_sdk"] = "rule_based"
+    provider_name: Literal["anthropic", "openai"] = "anthropic"
     model: str = "sonnet"
     max_concurrency: int = Field(default=4, ge=1)
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
@@ -44,6 +45,7 @@ class AnalysisConfig(StrictConfigModel):
     max_output_tokens: int = Field(default=8_192, ge=256, le=64_000)
     redact_before_egress: bool = True
     external_data_egress_allowed: bool = False
+    repair: bool = True
 
     @model_validator(mode="after")
     def require_external_egress_opt_in(self) -> AnalysisConfig:

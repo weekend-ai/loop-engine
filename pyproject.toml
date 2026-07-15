@@ -17,6 +17,9 @@ dependencies = [
 [project.scripts]
 loop = "loop_engine.cli:app"
 
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+
 [dependency-groups]
 dev = [
   "boto3-stubs[s3]>=1.43.46",
@@ -49,3 +52,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.12"
 strict = true
 packages = ["loop_engine"]
+
+[[tool.mypy.overrides]]
+module = "openai.*"
+ignore_missing_imports = true

@@ -6,18 +6,19 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
-from loop_engine.anthropic_client import (
-    AnthropicClient,
-    build_anthropic_client,
-    request_structured,
-    resolve_model,
-)
 from loop_engine.identifiers import compound_id, namespaced_id
 from loop_engine.models import (
     CanonicalEvent,
     CanonicalEventCandidate,
-    CanonicalEventCandidateBatch,
+    LlmNormalizationBatch,
+    LlmNormalizationCandidate,
     RawRecordEnvelope,
+)
+from loop_engine.providers.base import ProviderAdapter
+from loop_engine.providers.registry import (
+    build_provider,
+    request_and_validate,
+    resolve_model,
 )
 from loop_engine.security import redact_value
 
@@ -27,8 +28,10 @@ for each meaningful text message, tool call, tool result, or API error. A tool_r
 role='tool'.
 Extract tool_call_id from tool_use.id or tool_result.tool_use_id so calls and results can be paired.
 Extract MCP server and plugin/skill attribution when present. Accept legacy and current shapes,
-including string toolUseResult. Do not classify human corrections or infer outcomes. Do not invent
-record IDs, timestamps, token counts, statuses, attribution, or tool names. Skip unsupported fields.
+including string toolUseResult. Do not classify human corrections or infer outcomes.
+Do not repeat envelope facts (timestamp, tokens, session, model) — only return interpreted fields.
+Serialize tool arguments as a JSON string in tool_arguments_json, not as a nested object.
+Do not invent record IDs, statuses, attribution, or tool names. Skip unsupported fields.
 """
 
 
@@ -86,6 +89,17 @@ def _mcp_server(tool_name: str | None) -> str | None:
         return None
     parts = tool_name.split("__", 2)
     return parts[1] if len(parts) >= 3 and parts[1] else None
+
+
+def _args_to_json(value: Any) -> str | None:
+    """Serialize tool arguments to a JSON string."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str):
+        return value
+    return None
 
 
 def _candidate_base(
@@ -177,7 +191,7 @@ class RuleBasedClaudeRecordNormalizer:
                             role=role or "assistant",
                             content=_text(arguments),
                             tool_name=tool_name,
-                            tool_arguments=arguments if isinstance(arguments, dict) else None,
+                            tool_arguments_json=_args_to_json(arguments),
                             tool_call_id=_as_string(item.get("id")),
                             mcp_server=_mcp_server(tool_name),
                         )
@@ -198,9 +212,11 @@ class RuleBasedClaudeRecordNormalizer:
                             content=_text(result_value),
                             tool_result=_text(result_value),
                             tool_name=_as_string(legacy_dict.get("toolName")),
-                            tool_arguments=legacy_dict.get("input")
-                            if isinstance(legacy_dict.get("input"), dict)
-                            else None,
+                            tool_arguments_json=_args_to_json(
+                                legacy_dict.get("input")
+                                if isinstance(legacy_dict.get("input"), dict)
+                                else None
+                            ),
                             tool_call_id=_as_string(item.get("tool_use_id")),
                             status=_status(item, legacy_dict),
                         )
@@ -222,9 +238,11 @@ class RuleBasedClaudeRecordNormalizer:
                         content=_text(result_value),
                         tool_result=_text(result_value),
                         tool_name=_as_string(legacy_dict.get("toolName")),
-                        tool_arguments=legacy_dict.get("input")
-                        if isinstance(legacy_dict.get("input"), dict)
-                        else None,
+                        tool_arguments_json=_args_to_json(
+                            legacy_dict.get("input")
+                            if isinstance(legacy_dict.get("input"), dict)
+                            else None
+                        ),
                         status=_status(legacy_dict),
                     )
                 )
@@ -250,6 +268,14 @@ class RuleBasedClaudeRecordNormalizer:
 
 
 class ClaudeSdkRecordNormalizer:
+    """LLM-based normalizer using provider adapters.
+
+    The LLM receives only the raw records (redacted) and returns
+    LlmNormalizationCandidate (interpreted fields only). Envelope
+    facts (timestamp, tokens, session_hint, model, etc.) are joined
+    back deterministically using record_id.
+    """
+
     def __init__(
         self,
         model: str = "sonnet",
@@ -258,8 +284,11 @@ class ClaudeSdkRecordNormalizer:
         max_record_chars: int = 4_000,
         max_output_tokens: int = 8_192,
         redact_before_egress: bool = True,
+        provider_name: str = "anthropic",
+        repair: bool = True,
         *,
-        client: AnthropicClient | None = None,
+        client: Any | None = None,
+        provider: ProviderAdapter | None = None,
     ) -> None:
         self.model = model
         self.timeout_seconds = timeout_seconds
@@ -267,12 +296,12 @@ class ClaudeSdkRecordNormalizer:
         self.max_record_chars = max_record_chars
         self.max_output_tokens = max_output_tokens
         self.redact_before_egress = redact_before_egress
-        self.client = client
-
-    def _client(self) -> AnthropicClient:
-        if self.client is None:
-            self.client = build_anthropic_client(self.timeout_seconds)
-        return self.client
+        self.repair = repair
+        self._provider = provider or build_provider(
+            provider_name,  # type: ignore[arg-type]
+            timeout_seconds=timeout_seconds,
+            client=client,
+        )
 
     def _payload(self, envelopes: list[RawRecordEnvelope]) -> str:
         records = [
@@ -309,30 +338,74 @@ class ClaudeSdkRecordNormalizer:
         if current:
             yield current
 
+    def _enrich_from_envelope(
+        self,
+        llm_candidate: LlmNormalizationCandidate,
+        envelope: RawRecordEnvelope,
+    ) -> CanonicalEventCandidate:
+        """Join LLM-interpreted fields with deterministic envelope facts."""
+        raw = _as_dict(envelope.raw)
+        message = _as_dict(raw.get("message"))
+        base = _candidate_base(envelope, raw, message)
+        envelope_facts = base or {
+            "record_id": envelope.record_id,
+            "timestamp": _as_string(raw.get("timestamp")) or "1970-01-01T00:00:00Z",
+        }
+        return CanonicalEventCandidate(
+            # Envelope facts (deterministic)
+            record_id=llm_candidate.record_id,
+            block_index=llm_candidate.block_index,
+            timestamp=envelope_facts.get("timestamp", "1970-01-01T00:00:00Z"),
+            session_hint=envelope_facts.get("session_hint"),
+            parent_hint=envelope_facts.get("parent_hint"),
+            actor_id=envelope_facts.get("actor_id"),
+            model=envelope_facts.get("model"),
+            input_tokens=envelope_facts.get("input_tokens"),
+            output_tokens=envelope_facts.get("output_tokens"),
+            message_id=envelope_facts.get("message_id"),
+            asset_markers=envelope_facts.get("asset_markers", []),
+            # LLM-interpreted fields
+            event_type=llm_candidate.event_type,
+            role=llm_candidate.role,
+            content=llm_candidate.content,
+            tool_name=llm_candidate.tool_name,
+            tool_arguments_json=llm_candidate.tool_arguments_json,
+            tool_result=llm_candidate.tool_result,
+            tool_call_id=llm_candidate.tool_call_id,
+            status=llm_candidate.status,
+            mcp_server=llm_candidate.mcp_server,
+            plugin_name=llm_candidate.plugin_name,
+            attribution_skill=llm_candidate.attribution_skill,
+        )
+
     def normalize(
         self, envelopes: list[RawRecordEnvelope]
     ) -> list[CanonicalEventCandidate]:
         all_candidates: list[CanonicalEventCandidate] = []
-        schema = CanonicalEventCandidateBatch.model_json_schema()
+        envelope_map = {e.record_id: e for e in envelopes}
+
         for batch in self._batches(envelopes):
-            structured = request_structured(
-                self._client(),
+            result = request_and_validate(
+                self._provider,
                 model=resolve_model(self.model),
                 system_prompt=_NORMALIZATION_PROMPT,
                 payload=self._payload(batch),
-                schema=schema,
+                target_type=LlmNormalizationBatch,
                 max_output_tokens=self.max_output_tokens,
                 operation="record normalization",
+                repair=self.repair,
             )
-            normalized = CanonicalEventCandidateBatch.model_validate(structured)
+            assert isinstance(result, LlmNormalizationBatch)
             allowed = {envelope.record_id for envelope in batch}
-            for candidate in normalized.events:
-                if candidate.record_id not in allowed:
+            for llm_candidate in result.events:
+                if llm_candidate.record_id not in allowed:
                     raise RuntimeError(
                         "Claude normalization cited unknown record ID: "
-                        f"{candidate.record_id}"
+                        f"{llm_candidate.record_id}"
                     )
-            all_candidates.extend(normalized.events)
+                envelope = envelope_map[llm_candidate.record_id]
+                candidate = self._enrich_from_envelope(llm_candidate, envelope)
+                all_candidates.append(candidate)
         return all_candidates
 
 
@@ -391,7 +464,7 @@ def finalize_candidates(
                 content_hash=content_hash,
                 model=candidate.model,
                 tool_name=candidate.tool_name,
-                tool_arguments=candidate.tool_arguments,
+                tool_arguments_json=candidate.tool_arguments_json,
                 tool_result=candidate.tool_result,
                 status=candidate.status,
                 input_tokens=candidate.input_tokens,
