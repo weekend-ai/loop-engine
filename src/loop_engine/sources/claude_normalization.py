@@ -483,6 +483,17 @@ def finalize_candidates(
                 ),
                 http_status=candidate.http_status,
                 stop_reason=candidate.stop_reason,
+                invocations=candidate.invocations,
+                context_components=candidate.context_components,
+                coverage_artifacts_used=(
+                    candidate.coverage_artifacts_used
+                ),
+                coverage_artifacts_skipped=(
+                    candidate.coverage_artifacts_skipped
+                ),
+                coverage_unresolved_fields=(
+                    candidate.coverage_unresolved_fields
+                ),
                 raw_ref=(
                     f"{envelope.raw_ref}&block={candidate.block_index}"
                 ),

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Literal
+from typing import Any, Literal
 
 from loop_engine.models import (
     AssetExposure,
@@ -197,6 +197,61 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
             e.latency_ms for e in ordered if e.latency_ms is not None
         ]
 
+        # Aggregate invocations, components, coverage from events
+        all_invocations: list[Any] = []
+        all_components: list[Any] = []
+        all_coverage_used: list[str] = []
+        all_coverage_unresolved: list[str] = []
+        for event in ordered:
+            all_invocations.extend(event.invocations)
+            all_components.extend(event.context_components)
+            all_coverage_used.extend(event.coverage_artifacts_used)
+            all_coverage_unresolved.extend(
+                event.coverage_unresolved_fields
+            )
+
+        # Deduplicate invocations by invocation_id
+        deduped_invocations = _dedup_invocations_raw(all_invocations)
+        deduped_components = _dedup_components_raw(all_components)
+
+        # When invocations exist, derive totals from them
+        if deduped_invocations:
+            inv_input = sum(
+                inv.get("input_tokens") or 0
+                for inv in deduped_invocations
+            )
+            inv_output = sum(
+                inv.get("output_tokens") or 0
+                for inv in deduped_invocations
+            )
+            inv_cache_create = sum(
+                inv.get("cache_creation_input_tokens") or 0
+                for inv in deduped_invocations
+            )
+            inv_cache_read = sum(
+                inv.get("cache_read_input_tokens") or 0
+                for inv in deduped_invocations
+            )
+            inv_latency = sum(
+                inv.get("latency_ms") or 0
+                for inv in deduped_invocations
+            )
+            final_input = inv_input
+            final_output = inv_output
+            final_cache_create = inv_cache_create
+            final_cache_read = inv_cache_read
+            final_latency = inv_latency or None
+        else:
+            final_input = sum(input_totals.values())
+            final_output = sum(output_totals.values())
+            final_cache_create = sum(
+                cache_creation_totals.values()
+            )
+            final_cache_read = sum(cache_read_totals.values())
+            final_latency = (
+                sum(latency_values) if latency_values else None
+            )
+
         tasks.append(
             TaskRun(
                 task_id=f"task:{session_id}",
@@ -213,22 +268,56 @@ def reconstruct_tasks(events: list[CanonicalEvent]) -> list[TaskRun]:
                     e.tool_name for e in ordered if e.tool_name
                 }),
                 asset_exposures=exposures,
-                input_tokens=sum(input_totals.values()),
-                output_tokens=sum(output_totals.values()),
+                input_tokens=final_input,
+                output_tokens=final_output,
                 cost_usd=(
                     sum(cost_values) if cost_values else None
                 ),
-                latency_ms=(
-                    sum(latency_values) if latency_values else None
-                ),
-                cache_creation_input_tokens=sum(
-                    cache_creation_totals.values()
-                ),
-                cache_read_input_tokens=sum(
-                    cache_read_totals.values()
-                ),
+                latency_ms=final_latency,
+                cache_creation_input_tokens=final_cache_create,
+                cache_read_input_tokens=final_cache_read,
                 http_statuses=http_statuses,
                 stop_reasons=stop_reasons,
+                invocations=[
+                    OperationalInvocation.model_validate(inv)
+                    for inv in deduped_invocations
+                ],
+                context_components=[
+                    ContextComponent.model_validate(comp)
+                    for comp in deduped_components
+                ],
+                coverage_artifacts_used=sorted(set(
+                    all_coverage_used
+                )),
+                coverage_unresolved_fields=sorted(set(
+                    all_coverage_unresolved
+                )),
             )
         )
     return tasks
+
+
+def _dedup_invocations_raw(
+    invocations: list[Any],
+) -> list[dict[str, Any]]:
+    """Deduplicate invocations by invocation_id."""
+    seen: dict[str, dict[str, Any]] = {}
+    for inv in invocations:
+        d = inv if isinstance(inv, dict) else inv.model_dump(mode="json")
+        iid = d.get("invocation_id", "")
+        if iid not in seen:
+            seen[iid] = d
+    return list(seen.values())
+
+
+def _dedup_components_raw(
+    components: list[Any],
+) -> list[dict[str, Any]]:
+    """Deduplicate components by (kind, name)."""
+    seen: dict[tuple[str, str | None], dict[str, Any]] = {}
+    for comp in components:
+        d = comp if isinstance(comp, dict) else comp.model_dump(mode="json")
+        key = (d.get("kind", ""), d.get("name"))
+        if key not in seen:
+            seen[key] = d
+    return list(seen.values())

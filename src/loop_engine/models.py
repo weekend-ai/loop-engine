@@ -39,6 +39,11 @@ class CanonicalEvent(BaseModel):
     cache_read_input_tokens: int | None = None
     http_status: int | None = None
     stop_reason: str | None = None
+    invocations: list[Any] = Field(default_factory=list)
+    context_components: list[Any] = Field(default_factory=list)
+    coverage_artifacts_used: list[str] = Field(default_factory=list)
+    coverage_artifacts_skipped: list[str] = Field(default_factory=list)
+    coverage_unresolved_fields: list[str] = Field(default_factory=list)
     raw_ref: str
 
     @property
@@ -100,6 +105,11 @@ class CanonicalEventCandidate(BaseModel):
     cache_read_input_tokens: int | None = Field(default=None, ge=0)
     http_status: int | None = None
     stop_reason: str | None = None
+    invocations: list[Any] = Field(default_factory=list)
+    context_components: list[Any] = Field(default_factory=list)
+    coverage_artifacts_used: list[str] = Field(default_factory=list)
+    coverage_artifacts_skipped: list[str] = Field(default_factory=list)
+    coverage_unresolved_fields: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_tool_contract(self) -> CanonicalEventCandidate:
@@ -411,14 +421,16 @@ class OutcomeSignal(BaseModel):
 
 
 class SemanticSignalCandidate(BaseModel):
-    """Legacy signal candidate — kept for backward compatibility."""
+    """Legacy signal candidate — strict-mode compatible."""
+
+    model_config = ConfigDict(extra="forbid")
 
     kind: str
-    subtype: str | None = None
-    polarity: Literal["positive", "negative", "neutral", "unknown"] = "unknown"
+    subtype: str | None
+    polarity: Literal["positive", "negative", "neutral", "unknown"]
     confidence: float = Field(ge=0, le=1)
     evidence_event_ids: list[str] = Field(min_length=1)
-    evidence_quotes: list[str] = Field(default_factory=list)
+    evidence_quotes: list[str]
 
 
 class SemanticFinding(BaseModel):

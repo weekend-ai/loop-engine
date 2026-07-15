@@ -64,5 +64,6 @@ def build_source(
             redact_before_egress=analysis.redact_before_egress,
             provider_name=analysis.provider_name,
             repair=analysis.repair,
+            completeness_review=True,
         )
     raise ValueError(f"Unsupported source type: {config.type}")

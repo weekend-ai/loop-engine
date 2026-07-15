@@ -104,6 +104,15 @@ def _build_analysis_bundle(
                 "status": event.status,
                 "input_tokens": event.input_tokens,
                 "output_tokens": event.output_tokens,
+                "cache_creation_input_tokens": (
+                    event.cache_creation_input_tokens
+                ),
+                "cache_read_input_tokens": (
+                    event.cache_read_input_tokens
+                ),
+                "latency_ms": event.latency_ms,
+                "http_status": event.http_status,
+                "stop_reason": event.stop_reason,
                 "mcp_server": event.mcp_server,
                 "plugin_name": event.plugin_name,
                 "attribution_skill": event.attribution_skill,
@@ -126,7 +135,20 @@ def _build_analysis_bundle(
             "model_ids": task.model_ids,
             "tool_count": len(task.tool_names),
             "event_count": len(selected_events),
-            "invocation_count": len(task.invocations),
+            "invocations": [
+                inv.model_dump(mode="json")
+                for inv in task.invocations
+            ],
+            "context_components": [
+                comp.model_dump(mode="json")
+                for comp in task.context_components
+            ],
+            "coverage_artifacts_used": (
+                task.coverage_artifacts_used
+            ),
+            "coverage_unresolved_fields": (
+                task.coverage_unresolved_fields
+            ),
             "pending_tool_calls": [
                 event.tool_call_id
                 for event in selected_events

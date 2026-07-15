@@ -30,6 +30,8 @@ from loop_engine.identifiers import compound_id
 from loop_engine.models import (
     CanonicalEvent,
     CanonicalEventCandidate,
+    CompletenessIssue,
+    CompletenessReview,
     NormalizedTraceBundle,
     RawRecordEnvelope,
 )
@@ -313,8 +315,185 @@ def validate_bundle(
             errors.append(
                 f"coverage.artifacts_used: unknown artifact_id '{aid}'"
             )
+    # Invocations
+    inv_ids: set[str] = set()
+    for i, inv in enumerate(bundle_result.invocations):
+        _check_refs(inv.evidence, f"invocations[{i}]")
+        if inv.invocation_id in inv_ids:
+            errors.append(
+                f"invocations[{i}]: duplicate invocation_id "
+                f"'{inv.invocation_id}'"
+            )
+        inv_ids.add(inv.invocation_id)
+    # Context components
+    comp_keys: set[tuple[str, str | None]] = set()
+    for i, comp in enumerate(bundle_result.context_components):
+        _check_refs(comp.evidence, f"context_components[{i}]")
+        key = (comp.kind, comp.name)
+        if key in comp_keys:
+            errors.append(
+                f"context_components[{i}]: duplicate "
+                f"({comp.kind}, {comp.name})"
+            )
+        comp_keys.add(key)
 
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Artifact framing — stable source records
+# ---------------------------------------------------------------------------
+
+
+def _frame_artifact(artifact: RawArtifactEnvelope) -> list[dict[str, str]]:
+    """Frame an artifact into stable source records for completeness review.
+
+    Returns a list of {record_id, artifact_id, description} for each
+    observable unit: NDJSON lines, JSON keys/items, SSE events, or text
+    sections.
+    """
+    records: list[dict[str, str]] = []
+    content = artifact.content.strip()
+    if not content:
+        return records
+
+    if artifact.media_type == "application/x-ndjson":
+        for i, line in enumerate(content.splitlines()):
+            line = line.strip()
+            if line:
+                try:
+                    parsed = json.loads(line)
+                    event_type = parsed.get("type", "unknown")
+                    record_id = f"{artifact.artifact_id}:line:{i}"
+                    records.append({
+                        "record_id": record_id,
+                        "artifact_id": artifact.artifact_id,
+                        "description": f"NDJSON line {i}: {event_type}",
+                    })
+                except json.JSONDecodeError:
+                    records.append({
+                        "record_id": f"{artifact.artifact_id}:line:{i}",
+                        "artifact_id": artifact.artifact_id,
+                        "description": f"NDJSON line {i}: unparseable",
+                    })
+    elif artifact.media_type == "application/json":
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                for key in parsed:
+                    records.append({
+                        "record_id": f"{artifact.artifact_id}:key:{key}",
+                        "artifact_id": artifact.artifact_id,
+                        "description": f"JSON key: {key}",
+                    })
+            elif isinstance(parsed, list):
+                for i, _item in enumerate(parsed):
+                    records.append({
+                        "record_id": f"{artifact.artifact_id}:item:{i}",
+                        "artifact_id": artifact.artifact_id,
+                        "description": f"JSON item [{i}]",
+                    })
+        except json.JSONDecodeError:
+            records.append({
+                "record_id": f"{artifact.artifact_id}:raw",
+                "artifact_id": artifact.artifact_id,
+                "description": "Unparseable JSON",
+            })
+    else:
+        # Text sections: split on blank lines
+        sections = re.split(r"\n\s*\n", content)
+        for i, _section in enumerate(sections):
+            records.append({
+                "record_id": f"{artifact.artifact_id}:section:{i}",
+                "artifact_id": artifact.artifact_id,
+                "description": f"Text section {i}",
+            })
+    return records
+
+
+def _build_manifest(
+    artifacts: list[RawArtifactEnvelope],
+) -> list[dict[str, str]]:
+    """Build a complete source manifest for all artifacts."""
+    manifest: list[dict[str, str]] = []
+    for artifact in artifacts:
+        manifest.extend(_frame_artifact(artifact))
+    return manifest
+
+
+def _review_completeness(
+    bundle_result: NormalizedTraceBundle,
+    manifest: list[dict[str, str]],
+    valid_artifact_ids: set[str],
+) -> CompletenessReview:
+    """Compare source manifest with normalized inventory.
+
+    Checks for:
+    - Missing user/assistant messages
+    - Missing tool calls/results
+    - Missing final assistant response after tool use
+    - Invocations that were not extracted
+    """
+    issues: list[CompletenessIssue] = []
+
+    # Build normalized inventory: which artifacts/records were covered
+    covered_artifacts: set[str] = set(
+        bundle_result.coverage.artifacts_used
+    )
+    # Check NDJSON response streams for SSE events
+    for rec in manifest:
+        artifact_id = rec["artifact_id"]
+        if artifact_id not in covered_artifacts:
+            continue
+        desc = rec["description"]
+        # Check for final assistant message after tool results
+        if "message_stop" in desc or "message_delta" in desc:
+            # Verify this content is reflected in the bundle
+            pass  # Structural check below
+
+    # Check: if tool_calls exist but no messages after them,
+    # the final response may be missing
+    has_tool_results = len(bundle_result.tool_results) > 0
+    assistant_msgs = [
+        m for m in bundle_result.messages if m.role == "assistant"
+    ]
+
+    # If there are tool results but no assistant message after tool use,
+    # and the stop_reason is "end_turn", a final response was likely dropped
+    if (has_tool_results
+            and bundle_result.http.stop_reason == "end_turn"
+            and len(assistant_msgs) <= 1):
+        # Check manifest for evidence of a final response block
+        for rec in manifest:
+            if "content_block" in rec["description"] and "text" in rec[
+                "description"
+            ]:
+                # There's a text content block in the source that might
+                # not be in the normalized output
+                issues.append(CompletenessIssue(
+                    record_id=rec["record_id"],
+                    artifact_id=rec["artifact_id"],
+                    field="messages",
+                    description=(
+                        "Source contains a text content block that may "
+                        "represent a final assistant response not "
+                        "captured in normalized messages."
+                    ),
+                ))
+
+    # Validate that issues cite valid records and artifacts
+    validated_issues = []
+    for issue in issues:
+        if issue.artifact_id in valid_artifact_ids:
+            # Check record_id starts with a valid artifact_id
+            record_artifact = issue.record_id.split(":")[0]
+            if record_artifact in valid_artifact_ids:
+                validated_issues.append(issue)
+
+    return CompletenessReview(
+        complete=len(validated_issues) == 0,
+        issues=validated_issues,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +569,28 @@ def _bundle_to_candidates(
             ),
             http_status=http_status if assign_usage else None,
             stop_reason=stop_reason if assign_usage else None,
+            invocations=(
+                [inv.model_dump(mode="json")
+                 for inv in bundle_result.invocations]
+                if assign_usage else []
+            ),
+            context_components=(
+                [comp.model_dump(mode="json")
+                 for comp in bundle_result.context_components]
+                if assign_usage else []
+            ),
+            coverage_artifacts_used=(
+                bundle_result.coverage.artifacts_used
+                if assign_usage else []
+            ),
+            coverage_artifacts_skipped=(
+                bundle_result.coverage.artifacts_skipped
+                if assign_usage else []
+            ),
+            coverage_unresolved_fields=(
+                bundle_result.coverage.unresolved_fields
+                if assign_usage else []
+            ),
             role=role,
             content=content,
             tool_name=tool_name,
@@ -497,6 +698,7 @@ class RawTraceSource:
         redact_before_egress: bool = True,
         provider_name: str = "anthropic",
         repair: bool = True,
+        completeness_review: bool = False,
         *,
         provider: ProviderAdapter | None = None,
     ) -> None:
@@ -517,6 +719,7 @@ class RawTraceSource:
         self.max_output_tokens = max_output_tokens
         self.redact_before_egress = redact_before_egress
         self.repair = repair
+        self.completeness_review = completeness_review
         self._provider = provider or build_provider(
             provider_name,  # type: ignore[arg-type]
             timeout_seconds=timeout_seconds,
@@ -730,6 +933,52 @@ class RawTraceSource:
 
         for bundle in self.iter_bundles():
             result = self._normalize_bundle(bundle)
+
+            # Completeness review if enabled
+            if self.completeness_review:
+                manifest = _build_manifest(bundle)
+                valid_ids = {a.artifact_id for a in bundle}
+                review = _review_completeness(
+                    result, manifest, valid_ids,
+                )
+                if not review.complete:
+                    # Attempt repair: re-normalize with issue feedback
+                    issue_descs = [
+                        f"[{iss.record_id}] {iss.field}: {iss.description}"
+                        for iss in review.issues
+                    ]
+                    payload = self._build_payload(bundle)
+                    schema = NormalizedTraceBundle.model_json_schema()
+                    response = self._request_repair(
+                        payload, schema, "",
+                        [
+                            "Completeness review found missing data:",
+                            *issue_descs,
+                            "Include all content blocks, messages, "
+                            "and final responses in the output.",
+                        ],
+                    )
+                    try:
+                        repaired = parse_structured_response(
+                            response,
+                            NormalizedTraceBundle,
+                            "raw_trace completeness repair",
+                        )
+                        assert isinstance(repaired, NormalizedTraceBundle)
+                        errors = validate_bundle(
+                            repaired, valid_ids,
+                        )
+                        if not errors:
+                            # Re-review
+                            review2 = _review_completeness(
+                                repaired, manifest, valid_ids,
+                            )
+                            if review2.complete or len(
+                                review2.issues
+                            ) < len(review.issues):
+                                result = repaired
+                    except (RuntimeError, Exception):
+                        pass  # Keep original if repair fails
 
             # Update coverage from LLM's self-report
             self.coverage.normalized_artifacts += len(

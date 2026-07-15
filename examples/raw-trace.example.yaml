@@ -5,19 +5,23 @@
 #   # Edit path and provider settings below
 #   uv run loop validate -c raw-capture.yaml
 #   uv run loop run -c raw-capture.yaml
+#
+# Credentials:
+#   Set OPENAI_API_KEY (or LITELLM_API_KEY) in your environment.
+#   Optionally set OPENAI_API_BASE for a custom endpoint.
 
 version: 1
 
 sources:
   - id: relay-capture
     type: raw_trace
-    path: ./captures                  # path to capture directory or glob
+    path: ./captures
     normalizer: claude_sdk
 
 analysis:
   provider: claude_sdk
-  provider_name: openai               # anthropic | openai
-  model: claude-sonnet-4-20250514        # or any LiteLLM-compatible model
+  provider_name: openai
+  model: claude-sonnet-4-20250514
   timeout_seconds: 120
   max_input_chars: 100000
   max_event_chars: 10000
@@ -32,4 +36,4 @@ metrics:
 workspace: .loop-engine
 output:
   directory: output
-  formats: [json, markdown, duckdb]
+  formats: [json, markdown]
