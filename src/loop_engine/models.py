@@ -166,6 +166,159 @@ class LlmNormalizationBatch(BaseModel):
     events: list[LlmNormalizationCandidate]
 
 
+# ---------------------------------------------------------------------------
+# NormalizedTraceBundle — LLM-first raw trace output schema
+# ---------------------------------------------------------------------------
+# The LLM returns ONE of these per capture bundle. Every extracted fact
+# cites the artifact_id it came from via an EvidenceRef. Deterministic
+# code validates citations, pairs tools, deduplicates, and converts to
+# CanonicalEvents. No provider-specific field parsing in Python.
+
+
+class EvidenceRef(BaseModel):
+    """Citation linking an extracted fact to a source artifact."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str
+    locator: str | None = Field(
+        description=(
+            "Where in the artifact: JSON path, line number, "
+            "stream event index, or null for whole-artifact."
+        )
+    )
+
+
+class TraceBundleIdentity(BaseModel):
+    """Session/request identity extracted by the LLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str | None
+    request_id: str | None
+    parent_id: str | None
+    evidence: list[EvidenceRef]
+
+
+class TraceBundleTiming(BaseModel):
+    """Timing facts extracted by the LLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start_timestamp: str | None
+    end_timestamp: str | None
+    latency_ms: int | None
+    evidence: list[EvidenceRef]
+
+
+class TraceBundleUsage(BaseModel):
+    """Token/cache usage extracted by the LLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_creation_input_tokens: int | None
+    cache_read_input_tokens: int | None
+    evidence: list[EvidenceRef]
+
+
+class TraceBundleHTTP(BaseModel):
+    """HTTP-level facts extracted by the LLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status_code: int | None
+    stop_reason: str | None
+    model: str | None
+    evidence: list[EvidenceRef]
+
+
+class TraceToolCall(BaseModel):
+    """A single tool call extracted by the LLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_call_id: str
+    tool_name: str
+    arguments_json: str | None = Field(
+        description="Tool arguments as a JSON string."
+    )
+    mcp_server: str | None
+    plugin_name: str | None
+    attribution_skill: str | None
+    evidence: list[EvidenceRef]
+
+
+class TraceToolResult(BaseModel):
+    """A single tool result extracted by the LLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_call_id: str
+    content: str | None
+    is_error: bool
+    evidence: list[EvidenceRef]
+
+
+class TraceMessage(BaseModel):
+    """A message (user, assistant, or system) extracted by the LLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: str
+    content: str | None
+    evidence: list[EvidenceRef]
+
+
+class TraceCoverage(BaseModel):
+    """LLM's self-report of normalization coverage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifacts_used: list[str] = Field(
+        description="artifact_ids the LLM actually extracted facts from."
+    )
+    artifacts_skipped: list[str] = Field(
+        description="artifact_ids the LLM could not interpret."
+    )
+    unresolved_fields: list[str] = Field(
+        description=(
+            "Field names or paths the LLM saw but could not "
+            "map to the schema."
+        )
+    )
+
+
+class NormalizedTraceBundle(BaseModel):
+    """Complete LLM-first normalization of a raw trace bundle.
+
+    The LLM returns one of these per capture bundle. Every extracted
+    fact cites its source artifact via EvidenceRef. Deterministic code
+    validates citations, pairs tool calls/results, deduplicates usage,
+    and converts to CanonicalEvents.
+
+    STRICT-MODE CONTRACT: all properties required, nullable where
+    appropriate, no defaults. Compatible with OpenAI strict schemas.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    identity: TraceBundleIdentity
+    timing: TraceBundleTiming
+    http: TraceBundleHTTP
+    usage: TraceBundleUsage
+    messages: list[TraceMessage]
+    tool_calls: list[TraceToolCall]
+    tool_results: list[TraceToolResult]
+    pending_tool_calls: list[str] = Field(
+        description=(
+            "tool_call_ids that have a call but no result in this bundle."
+        )
+    )
+    coverage: TraceCoverage
+
+
 class AssetExposure(BaseModel):
     asset_name: str
     version: str
