@@ -25,10 +25,6 @@ The engine keeps analysis mechanics separate from data. Log locations, analyzer,
   - `normalizer: claude_sdk` sends bounded, recursively redacted raw records to Claude and validates returned event candidates.
   - Local finalization owns IDs, UTC timestamps, source namespaces, call/result pairing, and validation.
   - Canonical events retain MCP server, plugin/skill attribution, tool call IDs, and paired event IDs.
-- Local LiteLLM request JSON/JSONL
-- S3 LiteLLM request JSON/JSONL
-
-LiteLLM records with explicit `metadata.session_id` use it. Otherwise, the adapter reconstructs lineage from actor/model plus exact message-history prefixes and emits only the newly-added messages. Timestamps are normalized to UTC; timestamps without an offset are explicitly interpreted as UTC. When a source event/request ID is absent, the fallback is a stable hash of its full raw reference rather than process memory identity.
 
 Source IDs must be unique and match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Canonical event/session IDs use length-prefixed component encoding, so source and raw IDs cannot collide through delimiter ambiguity.
 
@@ -40,7 +36,7 @@ uv sync
 uv run loop --help
 ```
 
-Python 3.12+ and `uv` are required. Claude semantic analysis additionally requires Anthropic API access. Set `ANTHROPIC_API_KEY` (or `LITELLM_API_KEY`/`LITELLM_MASTER_KEY` with `ANTHROPIC_BASE_URL`/`LITELLM_BASE_URL` for a LiteLLM proxy). Verify with a real request:
+Python 3.12+ and `uv` are required. Claude semantic analysis additionally requires Anthropic API access. Set `ANTHROPIC_API_KEY` and verify it with a real request:
 
 ```python
 import anthropic; print(anthropic.Anthropic().messages.create(model="sonnet", max_tokens=10, messages=[{"role": "user", "content": "OK"}]).content[0].text)
@@ -116,17 +112,6 @@ sources:
     max_object_bytes: 10485760 # per raw JSONL record
     max_total_bytes: 104857600
 
-  - id: litellm-local
-    type: litellm_local_json
-    path: /var/log/litellm/**/*.json
-
-  - id: litellm-s3
-    type: litellm_s3_json
-    uri: s3://company-litellm/logs/
-    aws_profile: readonly
-    max_object_bytes: 10485760
-    max_total_bytes: 104857600
-
 analysis:
   provider: claude_sdk # or rule_based
   model: sonnet
@@ -143,8 +128,6 @@ output:
   directory: ./output
   formats: [json, markdown]
 ```
-
-Do not put AWS credentials in YAML. Use a read-only AWS profile or normal workload identity. S3 URIs are treated as directory prefixes. The adapter passes an explicit byte bound to every body read and enforces both per-object and per-run limits before retaining additional bytes in memory.
 
 ## Metrics contract
 
@@ -203,7 +186,7 @@ The DuckDB state and JSON/Markdown artifacts can contain canonical event content
 
 ```text
 src/loop_engine/
-├── sources/              # Claude JSONL and LiteLLM local/S3 adapters
+├── sources/              # Claude Code JSONL adapters
 ├── analyzers/            # Claude CLI semantic analyzer
 ├── models.py             # Canonical contracts
 ├── reconstruction.py     # Session -> Phase 0 TaskRun
